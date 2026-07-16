@@ -23,10 +23,16 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # Check out into a dir named after the component so the example's
+          # override_path (../../../) resolves to a folder called "ota-api".
+          # ESP-IDF names components after their directory, so the dir MUST
+          # match the component name or requirement resolution fails.
+          path: ota-api
 
       - name: Build ${{ matrix.example }} example (IDF ${{ matrix.idf_ver }}, ${{ matrix.idf_target }})
         uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: ${{ matrix.idf_ver }}
           target: ${{ matrix.idf_target }}
-          path: examples/${{ matrix.example }}
+          path: ota-api/examples/${{ matrix.example }}
