@@ -1,0 +1,31 @@
+name: Build Examples
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - dev
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Keep the matrix small so CI stays fast; expand targets/versions as needed.
+        # idf_ver values are espressif/idf Docker tags: https://hub.docker.com/r/espressif/idf/tags
+        idf_ver: ["release-v5.5", "latest"]
+        idf_target: ["esp32", "esp32s3"]
+        # One entry per directory under examples/.
+        example: ["basic"]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build ${{ matrix.example }} example (IDF ${{ matrix.idf_ver }}, ${{ matrix.idf_target }})
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: ${{ matrix.idf_ver }}
+          target: ${{ matrix.idf_target }}
+          path: examples/${{ matrix.example }}

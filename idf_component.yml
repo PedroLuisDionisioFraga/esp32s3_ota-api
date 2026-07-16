@@ -1,0 +1,40 @@
+name: "ota-api"
+version: "0.1.0"
+license: "MIT"
+description: "OTA API is a component for ESP-IDF that simplifies HTTPS over-the-air firmware updates for ESP32-based applications. Configure the firmware URL and an optional server certificate in a single struct, then run the update synchronously or in a background task that automatically reboots into the new firmware."
+url: "https://github.com/PedroLuisDionisioFraga/esp32s3_ota-api"
+repository: "https://github.com/PedroLuisDionisioFraga/esp32s3_ota-api"
+documentation: "https://github.com/PedroLuisDionisioFraga/esp32s3_ota-api/tree/main/README.md"
+issues: "https://github.com/PedroLuisDionisioFraga/esp32s3_ota-api/issues"
+targets:
+  - esp32
+  - esp32s2
+  - esp32s3
+  - esp32c3
+  - esp32c5
+  - esp32c6
+  - esp32h2
+  - esp32p4
+tags:
+  - esp32
+  - ota
+  - https
+  - firmware
+  - update
+  - esp_https_ota
+examples:
+  - path: examples/basic
+files:
+  exclude:
+    # Espressif CI leftovers kept in the repo but not shipped to the Registry
+    - "sdkconfig.ci*"
+    - "pytest_simple_ota.py"
+    - "examples/basic/pytest_simple_ota.py"
+    - "examples/basic/ota/**/*"
+    - "examples/basic/certs/**/*"
+    - "test/**/*"
+    - ".devcontainer/**/*"
+    - ".vscode/**/*"
+    - ".claude/**/*"
+dependencies:
+  idf: ">=5.5.0"

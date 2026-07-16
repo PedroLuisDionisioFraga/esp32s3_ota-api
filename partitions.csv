@@ -1,0 +1,21 @@
+# ESP32-S3 / 16MB flash / factory + 3 OTA slots
+#
+# Requires: CONFIG_PARTITION_TABLE_OFFSET=0x10000
+#           CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+# The table itself occupies 0x1000 at 0x10000, so partitions start at 0x11000.
+#
+# Flash encryption auto-encrypts: bootloader, partition table, all app
+# partitions, otadata and nvs_keys. Only the rest need an explicit flag.
+# Never flag `nvs` as encrypted -- it uses its own NVS encryption via nvs_keys.
+#
+# Name,     Type, SubType,  Offset,   Size,      Flags
+nvs,        data, nvs,      0x11000,  0x6000,
+nvs_keys,   data, nvs_keys, 0x17000,  0x1000,    encrypted
+otadata,    data, ota,      0x18000,  0x2000,
+phy_init,   data, phy,      0x1A000,  0x1000,
+factory,    app,  factory,  0x20000,  0x280000,
+ota_0,      app,  ota_0,    0x2A0000, 0x280000,
+ota_1,      app,  ota_1,    0x520000, 0x280000,
+ota_2,      app,  ota_2,    0x7A0000, 0x280000,
+coredump,   data, coredump, 0xA20000, 0x10000,   encrypted
+storage,    data, littlefs, 0xA30000, 0x5D0000,  encrypted

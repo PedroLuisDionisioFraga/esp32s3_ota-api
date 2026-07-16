@@ -1,0 +1,9 @@
+dependencies:
+  pedroluisdionisiofraga/ota-api:
+    version: "*"
+    # Build against the local component (repo root) instead of the published
+    # version — this is what lets CI test the code in the PR, not the Registry.
+    override_path: "../../../"
+  protocol_examples_common:
+    path: ${IDF_PATH}/examples/common_components/protocol_examples_common
+  idf: ">=5.5.0"

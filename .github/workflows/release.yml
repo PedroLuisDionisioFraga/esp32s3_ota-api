@@ -1,0 +1,94 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  NAMESPACE: "pedroluisdionisiofraga"
+  COMPONENT: "ota-api"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read component version
+        id: version
+        shell: bash
+        run: |
+          version=$(python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          content = Path('idf_component.yml').read_text(encoding='utf-8')
+          match = re.search(r'^version:\s*["\']?([^"\'\s]+)["\']?\s*$', content, re.MULTILINE)
+
+          if not match:
+              raise SystemExit('Unable to read version from idf_component.yml')
+
+          print(match.group(1))
+          PY
+          )
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check if version is already published
+        id: registry
+        shell: bash
+        run: |
+          version="${{ steps.version.outputs.version }}"
+
+          published=$(curl -sf "https://components.espressif.com/api/components/${NAMESPACE}/${COMPONENT}" \
+            | python3 -c "import json,sys; print(str(any(v['version'] == sys.argv[1] for v in json.load(sys.stdin)['versions'])).lower())" "$version") || published=false
+
+          echo "published=$published" >> "$GITHUB_OUTPUT"
+
+          if [ "$published" = "true" ]; then
+            echo "::warning::Version $version is already published to the ESP Component Registry. Bump 'version' in idf_component.yml to publish a new release; skipping upload."
+          fi
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          tag="${{ steps.version.outputs.tag }}"
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "$tag" "$GITHUB_SHA"
+          git push origin "$tag"
+
+          gh release create "$tag" \
+            --target "$GITHUB_SHA" \
+            --title "$tag" \
+            --generate-notes
+
+      - name: Upload component to ESP Component Registry
+        if: steps.registry.outputs.published != 'true'
+        uses: espressif/upload-components-ci-action@v2
+        with:
+          namespace: ${{ env.NAMESPACE }}
+          components: "${{ env.COMPONENT }}:."
+          api_token: ${{ secrets.IDF_COMPONENT_API_TOKEN }}

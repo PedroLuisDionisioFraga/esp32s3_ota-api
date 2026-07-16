@@ -1,0 +1,18 @@
+menu "OTA API Configuration"
+
+    config OTA_API_TASK_STACK_SIZE
+        int "OTA task stack size (bytes)"
+        default 8192
+        help
+            Stack size of the background task created by ota_api_start_task().
+            Used when ota_api_config_t.task_stack_size is 0.
+
+    config OTA_API_TASK_PRIORITY
+        int "OTA task priority"
+        range 1 24
+        default 5
+        help
+            FreeRTOS priority of the background task created by
+            ota_api_start_task(). Used when ota_api_config_t.task_priority is 0.
+
+endmenu
