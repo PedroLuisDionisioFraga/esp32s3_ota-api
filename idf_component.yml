@@ -1,5 +1,5 @@
 name: "ota-api"
-version: "0.1.1"
+version: "0.1.2"
 license: "MIT"
 description: "OTA API is a component for ESP-IDF that simplifies HTTPS over-the-air firmware updates for ESP32-based applications. Configure the firmware URL and an optional server certificate in a single struct, then run the update synchronously or in a background task that automatically reboots into the new firmware."
 url: "https://github.com/PedroLuisDionisioFraga/esp32s3_ota-api"
