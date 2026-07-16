@@ -1,6 +1,10 @@
 # OTA API
-
 [![Component Registry](https://components.espressif.com/components/pedroluisdionisiofraga/ota-api/badge.svg)](https://components.espressif.com/components/pedroluisdionisiofraga/ota-api)
+[![Build Examples](https://img.shields.io/github/actions/workflow/status/PedroLuisDionisioFraga/esp32s3_ota-api/build.yml?branch=main&label=builds)](https://github.com/PedroLuisDionisioFraga/esp32s3_ota-api/actions/workflows/build.yml)
+![GitHub repo size](https://img.shields.io/github/repo-size/PedroLuisDionisioFraga/esp32s3_ota-api)
+[![License](https://img.shields.io/github/license/PedroLuisDionisioFraga/esp32s3_ota-api)](LICENSE)
+![Targets](https://img.shields.io/badge/targets-ESP32%20%7C%20S2%20%7C%20S3%20%7C%20C3%20%7C%20C5%20%7C%20C6%20%7C%20H2%20%7C%20P4-blue)
+![ESP-IDF](https://img.shields.io/badge/ESP--IDF-%E2%89%A56.0-orange)
 
 OTA API is a component for ESP-IDF that simplifies HTTPS over-the-air firmware updates for ESP32-based applications. Configure the firmware URL and an optional server certificate in a single struct, then run the update synchronously or in a background task that automatically reboots into the new firmware.
 
