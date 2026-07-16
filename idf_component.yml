@@ -37,4 +37,4 @@ files:
     - ".vscode/**/*"
     - ".claude/**/*"
 dependencies:
-  idf: ">=5.5.0"
+  idf: ">=6.0.0"
