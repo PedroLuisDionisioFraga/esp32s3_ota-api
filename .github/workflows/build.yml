@@ -16,10 +16,11 @@ jobs:
         # Keep the matrix small so CI stays fast; expand targets/versions as needed.
         # idf_ver values are espressif/idf Docker tags: https://hub.docker.com/r/espressif/idf/tags
         idf_ver: ["release-v6.0", "latest"]
-        # All BLE-capable targets declared in idf_component.yml.
+        # Subset of the targets declared in idf_component.yml, kept small so CI stays fast.
         idf_target: ["esp32", "esp32s3", "esp32c3", "esp32c6", "esp32h2"]
-        # One entry per directory under examples/.
-        example: ["basic"]
+        # One entry per buildable project under examples/ (examples/common is
+        # shared assets, not a project).
+        example: ["basic", "rollback", "on_demand", "advanced"]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
