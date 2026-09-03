@@ -10,8 +10,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Pinned via pip, not apt: the .clang-format uses AlignEscapedNewlines:
+      # LeftWithLastLine, which clang-format 18 (the ubuntu-latest default)
+      # cannot parse, so it fails to read the config and rejects every file.
       - name: Install clang-format
-        run: sudo apt-get update && sudo apt-get install -y clang-format
+        run: pip install "clang-format==19.1.7"
 
       - name: Check formatting
         run: |

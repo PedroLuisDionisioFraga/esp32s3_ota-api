@@ -3,6 +3,7 @@ IndentWidth: 2
 ColumnLimit: 120
 ContinuationIndentWidth: 2
 IndentCaseLabels: true  # Indent case into switch
+IndentExternBlock: NoIndent  # Do not indent the body of extern "C" blocks
 AlignEscapedNewlines: LeftWithLastLine
 SpacesBeforeTrailingComments: 2
 AlignConsecutiveMacros: true
