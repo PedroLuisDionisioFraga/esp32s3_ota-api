@@ -1,0 +1,48 @@
+menu "Example Configuration"
+
+    config EXAMPLE_DEFAULT_FIRMWARE_UPGRADE_URL
+        string "default firmware upgrade url endpoint"
+        default "https://192.168.0.3:8070/hello_world.bin"
+        help
+            URL used by the 'ota' console command when it is called without an
+            argument. Any other URL can still be passed at runtime: ota <url>.
+
+    config EXAMPLE_TRIAL_TIMEOUT_S
+        int "Trial window before automatic rollback (seconds)"
+        range 10 3600
+        default 120
+        help
+            After booting a freshly downloaded image the device waits this long
+            for a 'confirm' on the console. If nobody confirms, it rolls back to
+            the previous firmware.
+
+            This is what keeps an unattended device from being stranded on a
+            broken update: set it long enough for an operator to react, short
+            enough that a field device recovers on its own.
+
+    config EXAMPLE_PROGRESS_INTERVAL_MS
+        int "Minimum gap between progress reports (ms)"
+        range 0 10000
+        default 250
+        help
+            Rate limit for the download progress line. 0 reports every chunk,
+            which floods the console on a fast link.
+
+    config EXAMPLE_HTTP_REQUEST_SIZE
+        int "Bytes per ranged HTTP request"
+        range 1024 262144
+        default 65536
+        help
+            Size of each ranged request used to fetch the image. Smaller values
+            recover faster from a dropped connection but add request overhead.
+
+    config EXAMPLE_SKIP_COMMON_NAME_CHECK
+        bool "Skip server certificate CN fieldcheck"
+        default n
+        help
+            This allows you to skip the validation of OTA server certificate CN field.
+
+            Not needed with the certificate produced by examples/common/ota_server.py:
+            it carries the server IP in subjectAltName, which mbedTLS validates.
+
+endmenu

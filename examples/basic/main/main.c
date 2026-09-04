@@ -25,7 +25,7 @@
 #include "esp_wifi.h"
 #endif
 
-#define HASH_LEN 32
+#define HASH_LEN     32
 #define OTA_URL_SIZE 256
 
 static const char *TAG = "ota_example";

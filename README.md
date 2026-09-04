@@ -13,6 +13,10 @@ OTA API is a component for ESP-IDF that simplifies HTTPS over-the-air firmware u
 - Single-struct configuration (`ota_api_config_t`) — no `esp_http_client`/`esp_https_ota` boilerplate.
 - Synchronous mode (`ota_api_update`) for callers that decide when to reboot.
 - Background task mode (`ota_api_start_task`) that reboots into the new firmware on success.
+- Download progress reported two ways: a direct callback and `OTA_API_EVENT` events on the default event loop.
+- Inspect the incoming image before it is written (`validate_cb`) — refuse a version already installed without downloading it.
+- Cancel an update in flight with `ota_api_abort()`, leaving the running firmware untouched.
+- Optional ranged downloads (`partial_download`) for links that drop long transfers.
 - Server validation via the trusted root certificate bundle (default) or a custom PEM certificate.
 - Optional binding of the OTA connection to a specific network interface (Wi-Fi STA, Ethernet, Thread).
 - Task stack size and priority configurable per call or via `menuconfig` (`OTA API Configuration`).
@@ -56,11 +60,33 @@ void app_main(void)
 
 For full control over the reboot, call `ota_api_update(&ota_config)` instead: it blocks until the download finishes and returns `ESP_OK` once the new image is set as the boot partition.
 
+To follow the download, set a progress callback (or register a handler for `OTA_API_EVENT` on the default event loop):
+
+```c
+static void on_progress(const ota_api_progress_t *p, void *ctx)
+{
+  printf("%d%% (%u/%u bytes)
+", p->percent, (unsigned)p->bytes_read, (unsigned)p->total_bytes);
+}
+
+ota_config.progress_cb = on_progress;
+ota_config.progress_interval_ms = 250;  // rate limit, 0 = every chunk
+```
+
+`ota_api_abort()` stops an update in progress; `ota_api_is_running()` reports whether one is active.
+
 ## Examples
 
-| Example                  | Description                                                                                     |
-| ------------------------ | ----------------------------------------------------------------------------------------------- |
-| [basic](examples/basic)  | Full OTA flow: network connection, partition SHA-256 report and update from a configurable URL. |
+| Example                          | Description                                                                                                                  |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| [basic](examples/basic)          | Full OTA flow with `ota_api_start_task()`: network connection, partition SHA-256 report and update from a configurable URL.   |
+| [rollback](examples/rollback)    | Self-test after booting a new image, confirming it with `esp_ota_mark_app_valid_cancel_rollback()` or rolling back on failure. |
+| [on_demand](examples/on_demand)  | Update triggered by a console command through the blocking `ota_api_update()`, with the reboot controlled by the application.  |
+| [advanced](examples/advanced)    | Everything together, driven from a console: live percentage, abort mid-download, version check, ranged download and operator-confirmed rollback. |
+
+[examples/common](examples/common) holds the shared local HTTPS server, which
+also generates its own self-signed certificate — no `openssl` needed on Windows
+or Linux.
 
 Create a project from an example:
 
