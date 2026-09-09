@@ -13,8 +13,8 @@ OTA API is a component for ESP-IDF that simplifies HTTPS over-the-air firmware u
 - Single-struct configuration (`ota_api_config_t`) — no `esp_http_client`/`esp_https_ota` boilerplate.
 - Synchronous mode (`ota_api_update`) for callers that decide when to reboot.
 - Background task mode (`ota_api_start_task`) that reboots into the new firmware on success.
-- Download progress reported two ways: a direct callback and `OTA_API_EVENT` events on the default event loop.
-- Inspect the incoming image before it is written (`validate_cb`) — refuse a version already installed without downloading it.
+- One callback for the whole update (`event_cb`): progress with a percentage, the incoming image's description, and the outcome. No second reporting path to choose between — for a decoupled observer, `esp_https_ota` already posts `ESP_HTTPS_OTA_EVENT` to the default event loop by itself.
+- Stop an update from inside that callback: return anything but `ESP_OK` and it unwinds, leaving the running firmware untouched — refuse a version already installed before a single byte is written.
 - Cancel an update in flight with `ota_api_abort()`, leaving the running firmware untouched.
 - Optional ranged downloads (`partial_download`) for links that drop long transfers.
 - Server validation via the trusted root certificate bundle (default) or a custom PEM certificate.
@@ -60,18 +60,45 @@ void app_main(void)
 
 For full control over the reboot, call `ota_api_update(&ota_config)` instead: it blocks until the download finishes and returns `ESP_OK` once the new image is set as the boot partition.
 
-To follow the download, set a progress callback (or register a handler for `OTA_API_EVENT` on the default event loop):
+To follow the download, set the callback. One function receives every event, and its return value decides whether the update goes on:
 
 ```c
-static void on_progress(const ota_api_progress_t *p, void *ctx)
+#include "esp_ota_ops.h"  // for ESP_ERR_OTA_VALIDATE_FAILED
+
+static esp_err_t on_ota_event(ota_api_event_id_t event_id, const void *data, void *ctx)
 {
-  printf("%d%% (%u/%u bytes)
+  switch (event_id)
+  {
+    case OTA_API_EVENT_PROGRESS:
+    {
+      const ota_api_progress_t *p = (const ota_api_progress_t *)data;
+      printf("%d%% (%u/%u bytes)
 ", p->percent, (unsigned)p->bytes_read, (unsigned)p->total_bytes);
+      break;
+    }
+
+    case OTA_API_EVENT_IMAGE_DESC:
+    {
+      const esp_app_desc_t *offered = (const esp_app_desc_t *)data;
+      if (strcmp(offered->version, esp_app_get_description()->version) == 0)
+        return ESP_ERR_OTA_VALIDATE_FAILED;  // already running it, nothing written yet
+      break;
+    }
+
+    default:
+      break;
+  }
+
+  return ESP_OK;  // anything else here stops the update
 }
 
-ota_config.progress_cb = on_progress;
+ota_config.event_cb = on_ota_event;
 ota_config.progress_interval_ms = 250;  // rate limit, 0 = every chunk
 ```
+
+### Following an update from elsewhere
+
+The component posts nothing to the default event loop. If a task that did *not* start the update needs to follow it — a display, an MQTT reporter — register a handler for `ESP_HTTPS_OTA_EVENT`, which `esp_https_ota` posts on its own during any update. Those events carry no percentage and cannot stop anything, which is exactly the gap `event_cb` fills.
 
 `ota_api_abort()` stops an update in progress; `ota_api_is_running()` reports whether one is active.
 

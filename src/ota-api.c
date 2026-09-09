@@ -20,8 +20,9 @@
 #include "esp_http_client.h"
 #include "esp_https_ota.h"
 #include "esp_log.h"
-// For ESP_ERR_OTA_VALIDATE_FAILED; callers that compare against it need this
-// header too, so it stays out of the public API
+// For ESP_ERR_OTA_VALIDATE_FAILED, which an event_cb both returns to refuse an
+// image and compares against, so callers need this header too and it stays out
+// of the public API
 #include "esp_ota_ops.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
@@ -45,15 +46,11 @@ static esp_err_t check_incoming_image(esp_https_ota_handle_t handle, const ota_a
   }
 
   ESP_LOGI(TAG, "New image: project '%s' version '%s'", new_app.project_name, new_app.version);
-  ota_api_post_event(OTA_API_EVENT_IMAGE_DESC, &new_app, sizeof(new_app));
 
-  if (config->validate_cb && !config->validate_cb(&new_app, config->user_ctx))
-  {
-    ESP_LOGW(TAG, "Update refused by validate_cb");
-    return ESP_ERR_OTA_VALIDATE_FAILED;
-  }
-
-  return ESP_OK;
+  /* The cheapest refusal point there is: only the header has been fetched and
+   * nothing has been written to flash yet.
+   */
+  return ota_api_dispatch_event(config, OTA_API_EVENT_IMAGE_DESC, &new_app);
 }
 
 /**
@@ -84,7 +81,9 @@ static esp_err_t download_image(esp_https_ota_handle_t handle, const ota_api_con
       return ESP_ERR_NOT_FINISHED;
     }
 
-    ota_api_report_progress(handle, config, total_bytes, &last_report_us, false);
+    err = ota_api_report_progress(handle, config, total_bytes, &last_report_us, false);
+    if (err != ESP_OK)
+      return err;
   }
 
   if (err != ESP_OK)
@@ -100,8 +99,11 @@ static esp_err_t download_image(esp_https_ota_handle_t handle, const ota_api_con
     return ESP_ERR_OTA_VALIDATE_FAILED;
   }
 
-  ota_api_report_progress(handle, config, total_bytes, &last_report_us, true);
-  return ESP_OK;
+  /* Forced so a 100% line always lands, and it doubles as the last chance to
+   * refuse: everything is downloaded, but esp_https_ota_finish() has not run
+   * yet, so nothing is bootable and aborting still discards it cleanly.
+   */
+  return ota_api_report_progress(handle, config, total_bytes, &last_report_us, true);
 }
 
 static esp_err_t run_update(const ota_api_config_t *config)
@@ -137,9 +139,9 @@ static esp_err_t run_update(const ota_api_config_t *config)
     return err;
   }
 
-  ota_api_post_event(OTA_API_EVENT_STARTED, NULL, 0);
-
-  err = check_incoming_image(handle, config);
+  err = ota_api_dispatch_event(config, OTA_API_EVENT_STARTED, NULL);
+  if (err == ESP_OK)
+    err = check_incoming_image(handle, config);
   if (err == ESP_OK)
     err = download_image(handle, config);
 
@@ -177,15 +179,19 @@ esp_err_t ota_api_update(const ota_api_config_t *config)
 
   ota_api_release_update_slot();
 
+  /* The slot is already released and the outcome already settled, so there is
+   * nothing left for a verdict to stop: event_cb's return value is discarded
+   * on both of these.
+   */
   if (err == ESP_OK)
   {
     ESP_LOGI(TAG, "Update written, new firmware boots on next restart");
-    ota_api_post_event(OTA_API_EVENT_SUCCEEDED, NULL, 0);
+    (void)ota_api_dispatch_event(config, OTA_API_EVENT_SUCCEEDED, NULL);
   }
   else
   {
     ESP_LOGE(TAG, "Update failed (%s)", esp_err_to_name(err));
-    ota_api_post_event(OTA_API_EVENT_FAILED, &err, sizeof(err));
+    (void)ota_api_dispatch_event(config, OTA_API_EVENT_FAILED, &err);
   }
 
   return err;

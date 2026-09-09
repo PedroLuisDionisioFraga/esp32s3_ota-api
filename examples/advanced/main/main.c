@@ -15,15 +15,20 @@
  * It combines what the other examples show separately and adds what only the
  * step-by-step esp_https_ota flow makes possible:
  *
- * - Live progress. A throttled progress callback prints a percentage bar with
- *   transfer rate and ETA, redrawn in place.
- * - Both reporting paths at once. The fine-grained percentage comes from
- *   ota_api_config_t::progress_cb, while the lifecycle (started, image
- *   description, success, failure) is consumed as OTA_API_EVENT events from
- *   the default event loop, showing the two mechanisms side by side.
- * - Version check before writing. validate_cb inspects the incoming image
- *   header and refuses firmware whose version matches the one already
- *   running, unless 'force' is passed.
+ * - Live progress. A throttled callback prints a percentage bar with transfer
+ *   rate and ETA, redrawn in place.
+ * - Both reporting paths at once. The percentage, the image description and
+ *   the version decision come from ota_api_config_t::event_cb, the single
+ *   callback the component invokes for every event, while the lifecycle is
+ *   also watched through ESP_HTTPS_OTA_EVENT — a base esp_https_ota posts to
+ *   the default event loop by itself, with no help from this component. The
+ *   two are shown side by side because they are good at different things: only
+ *   the callback carries a payload and can answer back, only the event loop
+ *   reaches code that did not start the update.
+ * - Version check before writing. That same callback inspects the incoming
+ *   image header at OTA_API_EVENT_IMAGE_DESC and returns
+ *   ESP_ERR_OTA_VALIDATE_FAILED for firmware whose version matches the one
+ *   already running, unless 'force' is passed.
  * - Abort mid-download. 'abort' asks the component to unwind cleanly, leaving
  *   the running firmware untouched.
  * - Ranged downloads. The image is fetched over several HTTP requests so a
@@ -43,6 +48,7 @@
 #include "esp_app_desc.h"
 #include "esp_console.h"
 #include "esp_event.h"
+#include "esp_https_ota.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_system.h"
@@ -78,7 +84,7 @@ static esp_timer_handle_t s_trial_timer;
 static int64_t s_download_start_us;
 
 /* ========================================================================== */
-/*                            PROGRESS REPORTING                              */
+/*                        PROGRESS AND VETO VIA CALLBACK                      */
 /* ========================================================================== */
 
 static void print_progress_bar(const ota_api_progress_t *progress)
@@ -113,87 +119,124 @@ static void print_progress_bar(const ota_api_progress_t *progress)
 }
 
 /**
- * @brief Progress callback, invoked by the component during the download
+ * @brief Single entry point for everything the component reports
  *
- * Runs on the OTA worker task between downloaded chunks, so it only formats a
- * line and returns — no blocking work belongs here.
+ * Runs on the OTA worker task in the middle of the download, so it may only
+ * format a line and return — no blocking work belongs here. What makes it more
+ * than a notification is the return value: ESP_OK lets the update carry on,
+ * anything else stops it and comes straight back out of ota_api_update().
+ *
+ * Lifecycle logging deliberately does NOT happen here. on_https_ota_event()
+ * does it from the IDF's own event loop, which keeps both mechanisms visible
+ * side by side without the console printing the same thing twice.
  */
-static void on_progress(const ota_api_progress_t *progress, void *user_ctx)
+static esp_err_t on_ota_event_cb(ota_api_event_id_t event_id, const void *data, void *user_ctx)
 {
   (void)user_ctx;
-  print_progress_bar(progress);
-}
-
-/**
- * @brief Decides whether the offered image is worth installing
- *
- * Called once the image header has been downloaded and before anything is
- * written to flash, which is what makes refusing it cheap.
- */
-static bool on_validate(const esp_app_desc_t *new_app, void *user_ctx)
-{
-  (void)user_ctx;
-
-  const esp_app_desc_t *running = esp_app_get_description();
-
-  printf("\n  offered : %s version %s\n", new_app->project_name, new_app->version);
-  printf("  running : %s version %s\n", running->project_name, running->version);
-
-  if (!s_force_update && strncmp(new_app->version, running->version, sizeof(new_app->version)) == 0)
-  {
-    printf("  same version already running, refusing. Use 'ota <url> force' to install anyway.\n");
-    return false;
-  }
-
-  return true;
-}
-
-/* ========================================================================== */
-/*                          LIFECYCLE VIA EVENT LOOP                          */
-/* ========================================================================== */
-
-/**
- * @brief Handles OTA_API_EVENT from the default event loop
- *
- * The same information could come from the return value of ota_api_update(),
- * but going through the event loop is what lets unrelated parts of an
- * application — a display task, an MQTT reporter — follow an update they did
- * not start.
- */
-static void on_ota_event(void *arg, esp_event_base_t base, int32_t event_id, void *event_data)
-{
-  (void)arg;
-  (void)base;
 
   switch (event_id)
   {
-    case OTA_API_EVENT_STARTED:
-      ESP_LOGI(TAG, "event: download started");
-      break;
-
     case OTA_API_EVENT_IMAGE_DESC:
     {
-      const esp_app_desc_t *desc = (const esp_app_desc_t *)event_data;
-      ESP_LOGI(TAG, "event: image header read, version '%s' built %s %s", desc->version, desc->date, desc->time);
-      break;
-    }
+      const esp_app_desc_t *new_app = (const esp_app_desc_t *)data;
+      const esp_app_desc_t *running = esp_app_get_description();
 
-    case OTA_API_EVENT_SUCCEEDED:
-      printf("\n");
-      ESP_LOGI(TAG, "event: image written successfully");
-      break;
+      /* The description only reaches the application here: the IDF's own
+       * GET_IMG_DESC event announces the step but carries no payload.
+       */
+      printf("\n  offered : %s version %s (built %s %s)\n",
+             new_app->project_name,
+             new_app->version,
+             new_app->date,
+             new_app->time);
+      printf("  running : %s version %s\n", running->project_name, running->version);
 
-    case OTA_API_EVENT_FAILED:
-    {
-      const esp_err_t *err = (const esp_err_t *)event_data;
-      printf("\n");
-      ESP_LOGE(TAG, "event: update failed (%s)", esp_err_to_name(*err));
+      if (!s_force_update && strncmp(new_app->version, running->version, sizeof(new_app->version)) == 0)
+      {
+        printf("  same version already running, refusing. Use 'ota <url> force' to install anyway.\n");
+        // Costs nothing: only the header has been downloaded at this point
+        return ESP_ERR_OTA_VALIDATE_FAILED;
+      }
       break;
     }
 
     case OTA_API_EVENT_PROGRESS:
-      // Handled by the progress callback, which can redraw a single line
+    {
+      print_progress_bar((const ota_api_progress_t *)data);
       break;
+    }
+
+    default:
+      break;
+  }
+
+  return ESP_OK;
+}
+
+/* ========================================================================== */
+/*                     LIFECYCLE VIA THE IDF'S OWN EVENT LOOP                 */
+/* ========================================================================== */
+
+/**
+ * @brief Handles ESP_HTTPS_OTA_EVENT from the default event loop
+ *
+ * This base belongs to esp_https_ota, not to this component: the IDF posts it
+ * on its own during any update, so following an update costs nothing but a
+ * handler registration. That is what lets unrelated parts of an application —
+ * a display task, an MQTT reporter — watch an update they did not start,
+ * without the component having to duplicate the notifications.
+ *
+ * What these events cannot do is carry a decision back, or a percentage:
+ * WRITE_FLASH reports bytes written with no total. Both of those come from
+ * on_ota_event_cb() instead, which is the point of having the two side by
+ * side.
+ */
+static void on_https_ota_event(void *arg, esp_event_base_t base, int32_t event_id, void *event_data)
+{
+  (void)arg;
+  (void)base;
+  (void)event_data;
+
+  switch (event_id)
+  {
+    case ESP_HTTPS_OTA_START:
+    {
+      ESP_LOGI(TAG, "event: update started");
+      break;
+    }
+
+    case ESP_HTTPS_OTA_CONNECTED:
+    {
+      ESP_LOGI(TAG, "event: connected to the server");
+      break;
+    }
+
+    case ESP_HTTPS_OTA_GET_IMG_DESC:
+    {
+      // The description itself reaches on_ota_event_cb(); this is just the step
+      ESP_LOGI(TAG, "event: reading the image header");
+      break;
+    }
+
+    case ESP_HTTPS_OTA_UPDATE_BOOT_PARTITION:
+    {
+      printf("\n");
+      ESP_LOGI(TAG, "event: boot partition updated");
+      break;
+    }
+
+    case ESP_HTTPS_OTA_FINISH:
+    {
+      ESP_LOGI(TAG, "event: update finished");
+      break;
+    }
+
+    case ESP_HTTPS_OTA_ABORT:
+    {
+      printf("\n");
+      ESP_LOGW(TAG, "event: update aborted");
+      break;
+    }
 
     default:
       break;
@@ -249,8 +292,7 @@ static void ota_worker_task(void *arg)
   (void)arg;
 
   ota_api_config_t ota_config = OTA_API_CONFIG_DEFAULT();
-  ota_config.progress_cb = on_progress;
-  ota_config.validate_cb = on_validate;
+  ota_config.event_cb = on_ota_event_cb;
   ota_config.progress_interval_ms = CONFIG_EXAMPLE_PROGRESS_INTERVAL_MS;
   // Ranged requests keep a flaky link from costing the whole transfer
   ota_config.partial_download = true;
@@ -492,7 +534,10 @@ void app_main(void)
 
   ESP_ERROR_CHECK(esp_netif_init());
   ESP_ERROR_CHECK(esp_event_loop_create_default());
-  ESP_ERROR_CHECK(esp_event_handler_register(OTA_API_EVENT, ESP_EVENT_ANY_ID, &on_ota_event, NULL));
+  /* esp_https_ota posts this base by itself during any update, so watching one
+   * costs nothing more than registering here.
+   */
+  ESP_ERROR_CHECK(esp_event_handler_register(ESP_HTTPS_OTA_EVENT, ESP_EVENT_ANY_ID, &on_https_ota_event, NULL));
 
   /* This helper function configures Wi-Fi or Ethernet, as selected in
    * menuconfig. Read "Establishing Wi-Fi or Ethernet Connection" section in

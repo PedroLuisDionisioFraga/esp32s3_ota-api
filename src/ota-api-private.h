@@ -64,20 +64,20 @@ esp_err_t ota_api_build_http_config(const ota_api_config_t *config, esp_http_cli
 /* ========================================================================== */
 
 /**
- * @brief Post an event, tolerating the absence of a default event loop
+ * @brief Hand one event to the application callback, if it set one
  *
- * An application that never creates the default loop simply does not get
- * events; that is not an error worth failing an update over.
+ * @return ESP_OK to carry on, or whatever verdict event_cb returned
  */
-void ota_api_post_event(ota_api_event_id_t event_id, const void *data, size_t data_size);
+esp_err_t ota_api_dispatch_event(const ota_api_config_t *config, ota_api_event_id_t event_id, const void *data);
 
 /**
- * @brief Report progress through the callback and the event loop
+ * @brief Report progress through the event loop and the callback
  *
  * @param last_report_us Timestamp of the previous report, updated in place
  * @param force Report regardless of progress_interval_ms
+ * @return ESP_OK to keep downloading, or event_cb's verdict to stop
  */
-void ota_api_report_progress(esp_https_ota_handle_t handle, const ota_api_config_t *config, int total_bytes,
-                             int64_t *last_report_us, bool force);
+esp_err_t ota_api_report_progress(esp_https_ota_handle_t handle, const ota_api_config_t *config, int total_bytes,
+                                  int64_t *last_report_us, bool force);
 
 #endif /* OTA_API_PRIVATE_H */

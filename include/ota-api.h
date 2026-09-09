@@ -8,10 +8,16 @@
  * device on success (ota_api_start_task).
  *
  * While an update runs the component reports download progress, the new
- * image's description and the final outcome. Progress is delivered two ways —
- * a direct callback (ota_api_config_t::progress_cb) and events posted to the
- * default event loop (OTA_API_EVENT) — so an application can take whichever
- * fits. Both are optional; ignoring them keeps the original behaviour.
+ * image's description and the final outcome through a single callback
+ * (ota_api_config_t::event_cb), whose return value also decides whether the
+ * update carries on: anything but ESP_OK stops it. The callback is optional;
+ * ignoring it keeps the original behaviour.
+ *
+ * Nothing is posted to the default event loop. esp_https_ota already posts
+ * ESP_HTTPS_OTA_EVENT there on its own, so a task that only wants to watch an
+ * update it did not start should handle that base rather than a duplicate of
+ * it. What esp_https_ota cannot do is take an answer back — that is what
+ * event_cb is for.
  *
  * @author Pedro Luis Dionisio Fraga
  * @date 2026
@@ -26,7 +32,6 @@
 
 #include "esp_app_desc.h"
 #include "esp_err.h"
-#include "esp_event.h"
 #include "esp_netif.h"
 #include "freertos/FreeRTOS.h"
 
@@ -40,27 +45,32 @@ extern "C"
 /* ========================================================================== */
 
 /**
- * @brief Event base for updates reported to the default event loop
+ * @brief What an update reports, delivered to ota_api_config_t::event_cb
  *
- * Events are posted only when a default event loop exists; if the application
- * never calls esp_event_loop_create_default() they are silently skipped.
- */
-ESP_EVENT_DECLARE_BASE(OTA_API_EVENT);
-
-/**
- * @brief Events posted under OTA_API_EVENT
+ * These are callback arguments, not event loop events: nothing is posted to
+ * the default event loop. esp_https_ota already posts ESP_HTTPS_OTA_EVENT
+ * there — START, CONNECTED, GET_IMG_DESC, WRITE_FLASH, FINISH, ABORT and the
+ * rest — so an observer that did not start the update registers a handler for
+ * that base instead of asking this component to duplicate it.
+ *
+ * What those events cannot carry is an answer back, nor a percentage: the
+ * IDF's WRITE_FLASH event reports bytes written and no total. Both are what
+ * event_cb adds.
  */
 typedef enum
 {
-  OTA_API_EVENT_STARTED,    /**< Connected, download begins. event_data: NULL */
+  OTA_API_EVENT_STARTED,    /**< Connected, download begins. data: NULL */
   OTA_API_EVENT_IMAGE_DESC, /**< New image header read.
-                                 event_data: const esp_app_desc_t * */
+                                 data: const esp_app_desc_t * */
   OTA_API_EVENT_PROGRESS,   /**< Bytes downloaded.
-                                 event_data: const ota_api_progress_t * */
+                                 data: const ota_api_progress_t * */
   OTA_API_EVENT_SUCCEEDED,  /**< Image written and set as boot partition.
-                                 event_data: NULL */
+                                 data: NULL. The update is already over, so an
+                                 event_cb verdict here is ignored */
   OTA_API_EVENT_FAILED,     /**< Update failed or was aborted.
-                                 event_data: const esp_err_t * */
+                                 data: const esp_err_t *. The update is already
+                                 over, so an event_cb verdict here is
+                                 ignored */
 } ota_api_event_id_t;
 
 /* ========================================================================== */
@@ -79,29 +89,42 @@ typedef struct
 } ota_api_progress_t;
 
 /**
- * @brief Called as the image downloads
+ * @brief Called for every event an update reports
  *
- * Runs on the task performing the update, in the middle of the download: it
- * must not block or start another update. Rate is limited by
- * ota_api_config_t::progress_interval_ms.
+ * Runs on the task performing the update, in the middle of it: it must not
+ * block, and it must not start another update. How often
+ * OTA_API_EVENT_PROGRESS arrives is set by
+ * ota_api_config_t::progress_interval_ms — a report the rate limit swallows
+ * never reaches this callback, so OTA_API_EVENT_PROGRESS is not the place to
+ * poll for a decision made elsewhere. ota_api_abort() is checked on every
+ * chunk regardless of the rate limit and remains the reliable way to stop an
+ * update from another task.
  *
- * @param progress Current progress. Valid only for the duration of the call
+ * This is the only path the component reports through. A task that merely
+ * observes an update it did not start should handle ESP_HTTPS_OTA_EVENT on the
+ * default event loop, which esp_https_ota posts by itself.
+ *
+ * @param event_id Which event fired, and therefore what @p data points to:
+ *                 - OTA_API_EVENT_STARTED:    NULL
+ *                 - OTA_API_EVENT_IMAGE_DESC: const esp_app_desc_t *
+ *                 - OTA_API_EVENT_PROGRESS:   const ota_api_progress_t *
+ *                 - OTA_API_EVENT_SUCCEEDED:  NULL
+ *                 - OTA_API_EVENT_FAILED:     const esp_err_t *
+ * @param data     Event payload. Valid only for the duration of the call
  * @param user_ctx ota_api_config_t::user_ctx as given
- */
-typedef void (*ota_api_progress_cb_t)(const ota_api_progress_t *progress, void *user_ctx);
-
-/**
- * @brief Called once the new image's header has been read, before it is written
+ * @return ESP_OK to let the update continue. Any other value stops it and
+ *         becomes the return value of ota_api_update(), which unwinds and
+ *         leaves the running firmware untouched — refusing at
+ *         OTA_API_EVENT_PROGRESS therefore throws away everything downloaded
+ *         so far. Refusing an image conventionally returns
+ *         ESP_ERR_OTA_VALIDATE_FAILED, declared in esp_ota_ops.h.
  *
- * Lets the application inspect the incoming firmware — typically to refuse a
- * version it already runs — while only the image header has been downloaded.
- *
- * @param new_app  Description of the image being offered
- * @param user_ctx ota_api_config_t::user_ctx as given
- * @return true to continue the update, false to stop it. Stopping makes the
- *         update return ESP_ERR_OTA_VALIDATE_FAILED
+ *         Stopping only works while there is still something to stop:
+ *         OTA_API_EVENT_SUCCEEDED and OTA_API_EVENT_FAILED are delivered once
+ *         the update has already ended, so their return value is ignored —
+ *         return ESP_OK there.
  */
-typedef bool (*ota_api_validate_cb_t)(const esp_app_desc_t *new_app, void *user_ctx);
+typedef esp_err_t (*ota_api_event_cb_t)(ota_api_event_id_t event_id, const void *data, void *user_ctx);
 
 /**
  * @brief OTA update configuration
@@ -112,34 +135,33 @@ typedef bool (*ota_api_validate_cb_t)(const esp_app_desc_t *new_app, void *user_
  */
 typedef struct
 {
-  const char *url;                   /**< Firmware image URL (required) */
-  const char *cert_pem;              /**< Server certificate in PEM format.
-                                          NULL = use the trusted root
-                                          certificate bundle (requires
-                                          MBEDTLS_CERTIFICATE_BUNDLE) */
-  bool skip_common_name_check;       /**< Skip server certificate CN
-                                          validation */
-  esp_netif_t *bind_netif;           /**< Bind the HTTP connection to this
-                                          network interface. NULL = any */
-  uint32_t task_stack_size;          /**< ota_api_start_task only. 0 = use
-                                          CONFIG_OTA_API_TASK_STACK_SIZE */
-  UBaseType_t task_priority;         /**< ota_api_start_task only. 0 = use
-                                          CONFIG_OTA_API_TASK_PRIORITY */
-  ota_api_progress_cb_t progress_cb; /**< Download progress callback.
-                                          NULL = no callback (events are
-                                          still posted) */
-  ota_api_validate_cb_t validate_cb; /**< Accept or refuse the incoming image.
-                                          NULL = always accept */
-  void *user_ctx;                    /**< Passed unchanged to both callbacks */
-  uint32_t progress_interval_ms;     /**< Minimum gap between progress
-                                          reports. 0 = report every chunk */
-  bool partial_download;             /**< Fetch the image over several ranged
-                                          HTTP requests, which survives links
-                                          that drop long transfers. Requires
-                                          CONFIG_ESP_HTTPS_OTA_ENABLE_PARTIAL_DOWNLOAD */
-  size_t max_http_request_size;      /**< Bytes per request when
-                                          partial_download is set. 0 = let
-                                          esp_https_ota choose */
+  const char *url;               /**< Firmware image URL (required) */
+  const char *cert_pem;          /**< Server certificate in PEM format.
+                                      NULL = use the trusted root certificate
+                                      bundle (requires
+                                      MBEDTLS_CERTIFICATE_BUNDLE) */
+  bool skip_common_name_check;   /**< Skip server certificate CN validation */
+  esp_netif_t *bind_netif;       /**< Bind the HTTP connection to this network
+                                      interface. NULL = any */
+  uint32_t task_stack_size;      /**< ota_api_start_task only. 0 = use
+                                      CONFIG_OTA_API_TASK_STACK_SIZE */
+  UBaseType_t task_priority;     /**< ota_api_start_task only. 0 = use
+                                      CONFIG_OTA_API_TASK_PRIORITY */
+  ota_api_event_cb_t event_cb;   /**< Called for every event, and the only way
+                                      to stop an update from inside it.
+                                      NULL = report nothing */
+  void *user_ctx;                /**< Passed unchanged to event_cb */
+  uint32_t progress_interval_ms; /**< Minimum gap between progress reports,
+                                      which is also how often event_cb gets a
+                                      chance to stop the update at
+                                      OTA_API_EVENT_PROGRESS.
+                                      0 = report every chunk */
+  bool partial_download;         /**< Fetch the image over several ranged HTTP
+                                      requests, which survives links that drop
+                                      long transfers. Requires
+                                      CONFIG_ESP_HTTPS_OTA_ENABLE_PARTIAL_DOWNLOAD */
+  size_t max_http_request_size;  /**< Bytes per request when partial_download
+                                      is set. 0 = let esp_https_ota choose */
 } ota_api_config_t;
 
 /**
@@ -153,8 +175,7 @@ typedef struct
     .bind_netif = NULL,              \
     .task_stack_size = 0,            \
     .task_priority = 0,              \
-    .progress_cb = NULL,             \
-    .validate_cb = NULL,             \
+    .event_cb = NULL,                \
     .user_ctx = NULL,                \
     .progress_interval_ms = 0,       \
     .partial_download = false,       \
@@ -190,9 +211,10 @@ typedef struct
  *         - ESP_ERR_INVALID_ARG: NULL config/url, or cert_pem is NULL while
  *           the certificate bundle is disabled
  *         - ESP_ERR_INVALID_STATE: Another update is already running
- *         - ESP_ERR_OTA_VALIDATE_FAILED: validate_cb refused the image, or the
+ *         - ESP_ERR_OTA_VALIDATE_FAILED: event_cb refused the image, or the
  *           downloaded image is incomplete or invalid
  *         - ESP_ERR_NOT_FINISHED: Stopped by ota_api_abort()
+ *         - Whatever else event_cb returned to stop the update
  *         - Any error propagated from esp_https_ota
  */
 esp_err_t ota_api_update(const ota_api_config_t *config);
