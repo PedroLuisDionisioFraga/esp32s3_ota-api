@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-09
+
+### Changed
+
+- The Doxygen comments in `include/ota-api.h` are condensed to a one-line brief,
+  a short body limited to safety-relevant behaviour, and terse `@param` entries.
+  The enumerated `@return` error codes are kept. Comments only — no API or
+  behaviour change.
+
 ## [0.3.0] - 2026-09-08
 
 ### Changed
