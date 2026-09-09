@@ -120,7 +120,20 @@ CONFIG_ESP_TLS_INSECURE=y
 CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y
 ```
 
-With that option set the component does not attach the root bundle for a `NULL` `cert_pem`: the TLS handshake runs with no trust anchor and the server is not authenticated. The transfer is still encrypted, but anyone who can intercept it can serve their own image. Use it only on a network you control, and prefer a pinned `cert_pem` everywhere else.
+That is all you need — in particular **not** `CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP`, which stays off so a plain `http://` URL is still refused.
+
+Those two options are not enough on their own, which is why the component has to step in. `esp_https_ota_begin()` rejects a configuration in which `cert_pem`, `use_global_ca_store` and `crt_bundle_attach` are all unset — it reads them straight off the `esp_http_client_config_t` before the HTTP client even exists, so esp-tls never gets far enough to apply its global skip, and the update fails with `No option for server verification is enabled in esp_http_client config.` With the options above the component therefore installs a `crt_bundle_attach` hook that clears that gate and then puts the verification back down, leaving the handshake with no trust anchor.
+
+The transfer is still encrypted, but the server is not authenticated: anyone who can intercept it can serve their own image. Use it only on a network you control, and prefer a pinned `cert_pem` everywhere else.
+
+| Scenario | `cert_pem` | Kconfig needed |
+| --- | --- | --- |
+| Production, public HTTPS | `NULL` | `CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y` (default) |
+| Production, pinned server | your PEM | none |
+| Lab, self-signed HTTPS | `NULL` | `CONFIG_ESP_TLS_INSECURE=y` + `CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y` |
+| Lab, plain HTTP | ignored | `CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y` |
+
+With `CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=n` the lab HTTPS case still works, but `esp_http_client` logs one misleading `use_crt_bundle configured but not enabled in menuconfig` error as it drops the hook; esp-tls then reaches the same unverified handshake on its own.
 
 ### Trial run and rollback
 

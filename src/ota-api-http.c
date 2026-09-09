@@ -21,6 +21,10 @@
 #include "esp_crt_bundle.h"
 #endif
 
+#ifdef CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY
+#include "mbedtls/ssl.h"
+#endif
+
 static const char *TAG = "ota-api";
 
 static esp_err_t http_event_handler(esp_http_client_event_t *evt)
@@ -98,6 +102,28 @@ static bool is_plain_http(const char *url)
   return strncasecmp(url, "http://", 7) == 0;
 }
 
+#ifdef CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY
+/**
+ * @brief Stand in for a certificate bundle without trusting anything
+ *
+ * esp_https_ota_begin() refuses a configuration in which cert_pem,
+ * use_global_ca_store and crt_bundle_attach are all unset. It reads them off
+ * esp_http_client_config_t before the client exists, so nothing downstream can
+ * satisfy it and CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY never gets to apply.
+ *
+ * A non-NULL crt_bundle_attach clears that gate. esp-tls then arms
+ * MBEDTLS_SSL_VERIFY_REQUIRED and hands this hook the config it just armed,
+ * which is where the verification comes back out: no CA chain is installed and
+ * no verify callback is registered, so the handshake completes against an
+ * unauthenticated peer -- which is what the option asked for.
+ */
+static esp_err_t skip_server_verify_attach(void *conf)
+{
+  mbedtls_ssl_conf_authmode((mbedtls_ssl_config *)conf, MBEDTLS_SSL_VERIFY_NONE);
+  return ESP_OK;
+}
+#endif
+
 esp_err_t ota_api_build_http_config(const ota_api_config_t *config, esp_http_client_config_t *http_config,
                                     struct ifreq *ifr)
 {
@@ -127,12 +153,14 @@ esp_err_t ota_api_build_http_config(const ota_api_config_t *config, esp_http_cli
   else
   {
 #ifdef CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY
-    /* No certificate given, but esp-tls is globally configured to skip server
-     * verification (a lab-only option). Attaching the root bundle here would
-     * arm a verify callback that rejects a self-signed server before that
-     * global skip takes effect, so leave cert_pem and crt_bundle_attach unset
-     * and let the handshake run without a trust anchor.
+    /* Not a bundle: a hook that satisfies esp_https_ota's server-verification
+     * gate and then turns verification off (see skip_server_verify_attach).
+     * With CONFIG_MBEDTLS_CERTIFICATE_BUNDLE disabled esp_http_client drops
+     * the hook with a misleading "use_crt_bundle configured but not enabled"
+     * error and esp-tls reaches the same place on its own, so the lab case
+     * still works either way.
      */
+    http_config->crt_bundle_attach = skip_server_verify_attach;
     http_config->skip_cert_common_name_check = true;
     ESP_LOGW(TAG, "cert_pem is NULL and CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY is set; OTA server not authenticated");
 #elif defined(CONFIG_MBEDTLS_CERTIFICATE_BUNDLE)

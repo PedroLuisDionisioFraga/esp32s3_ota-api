@@ -34,6 +34,24 @@ the script reports that it generated a new one:
 idf.py fullclean build flash monitor
 ```
 
+### Skipping verification instead (lab only)
+
+To avoid that rebuild every time `ota_server.py` regenerates its certificate,
+let esp-tls skip server verification rather than trusting a specific
+certificate. Leave **Example Configuration -> Enable certificate bundle** on, so
+`cert_pem` stays `NULL`, and enable under `Component config -> ESP-TLS`:
+
+```kconfig
+CONFIG_ESP_TLS_INSECURE=y
+CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y
+```
+
+The URL stays `https://` and `CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP` is not needed.
+The image is still encrypted in transit but the server is not authenticated, so
+keep this to a network you control — see
+[HTTPS to a server with a self-signed certificate](../../README.md#https-to-a-server-with-a-self-signed-certificate)
+in the component README.
+
 ## Build and Flash
 
 ```bash
