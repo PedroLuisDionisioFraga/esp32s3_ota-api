@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-09-09
+
+### Fixed
+
+- The 0.3.2 fix was incomplete on ESP-IDF 6.0. Dropping the certificate bundle for a
+  `NULL` `cert_pem` left `cert_pem`, `use_global_ca_store` and `crt_bundle_attach` all
+  unset, which is exactly the configuration `esp_https_ota_begin()` refuses: the update
+  died with `No option for server verification is enabled in esp_http_client config.`
+  before the TLS handshake, so esp-tls never got far enough to apply its global skip.
+  With `CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY` the component now installs a
+  `crt_bundle_attach` hook that clears that gate and then sets `MBEDTLS_SSL_VERIFY_NONE`,
+  so a lab server with a self-signed certificate completes the download.
+  `CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP` is **not** required — a plain `http://` URL is still
+  refused without it. Builds without `CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY` are
+  unchanged.
+
 ## [0.3.2] - 2026-09-09
 
 ### Fixed
