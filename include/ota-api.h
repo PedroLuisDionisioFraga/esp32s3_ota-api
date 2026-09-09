@@ -172,6 +172,15 @@ typedef struct
  * OTA partition, setting it as the boot partition. Does NOT restart the
  * device — the caller decides when to reboot into the new firmware.
  *
+ * Blocks for the whole transfer, which is tens of seconds on a slow link: the
+ * calling task does nothing else until it returns. A task that has to stay
+ * responsive — a console, a UI, a protocol handler — must therefore not call
+ * this directly, or its own work stalls for the duration of the download and
+ * it cannot even service an ota_api_abort(). Two ways around it: let
+ * ota_api_start_task() spawn the task, or keep a task of your own that blocks
+ * on a queue or semaphore and calls this when asked. The on_demand example
+ * takes the second route, which is what keeps its console usable mid-download.
+ *
  * Only one update may run at a time, whether started here or by
  * ota_api_start_task().
  *
@@ -194,6 +203,12 @@ esp_err_t ota_api_update(const ota_api_config_t *config);
  * Spawns a FreeRTOS task that calls ota_api_update(). On success the device
  * restarts into the new firmware; on failure the task logs the error and
  * deletes itself.
+ *
+ * This is the shortest way to keep the blocking download off the caller's
+ * task, at the cost of the reboot being decided here. An application that has
+ * to act between the write and the restart — close a connection, warn an
+ * operator, wait for an idle moment — should run ota_api_update() from a task
+ * of its own instead.
  *
  * @param config Update configuration (url is required). The struct itself is
  *               copied, but the pointers inside must stay valid (see
