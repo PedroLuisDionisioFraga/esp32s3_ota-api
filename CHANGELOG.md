@@ -7,6 +7,142 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-08
+
+### Changed
+
+- **Breaking.** `ota_api_config_t::progress_cb` and `ota_api_config_t::validate_cb`
+  are replaced by a single `event_cb` of type `ota_api_event_cb_t`, invoked for
+  all five `ota_api_event_id_t` values. Returning `ESP_OK` lets the update
+  continue; any other value stops it and becomes the return value of
+  `ota_api_update()`. `user_ctx` and `progress_interval_ms` are unchanged.
+- The advanced example is rebuilt on `ota_api_start_task()` and the trial API: its
+  OTA task, semaphore and trial state machine are gone, leaving one event
+  callback plus the console commands. `EXAMPLE_TRIAL_TIMEOUT_S` is replaced by
+  the component's `CONFIG_OTA_API_TRIAL_TIMEOUT_S`.
+- The rollback example uses the trial API instead of calling `esp_ota_ops`
+  directly.
+- The implementation is split across `src/ota-api-state.c` (the update slot and
+  its lock), `src/ota-api-http.c` (HTTP client setup), `src/ota-api-report.c`
+  (reporting) and `src/ota-api-trial.c` (the trial run), leaving `src/ota-api.c`
+  with the update state machine. Internal only — no effect on the public API.
+
+### Added
+
+- Plain `http://` URLs are recognised and no longer require a certificate or
+  the trusted root bundle, which they had no use for: server verification is a
+  TLS notion and there is no TLS on such a URL. Whether an unauthenticated
+  transfer is acceptable is now decided by `CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP`,
+  esp_https_ota's own option, instead of by a rule of this component's.
+
+  **Behaviour change to check if you download over HTTP.** Previously, with
+  `CONFIG_MBEDTLS_CERTIFICATE_BUNDLE` enabled, an `http://` URL worked without
+  `CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP`: the component attached the bundle, which
+  made esp_https_ota's `is_server_verification_enabled()` return true and
+  skipped the safety gate even though nothing was ever verified. That accident
+  is gone — an `http://` URL now needs `CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y` and
+  is refused with `ESP_ERR_INVALID_ARG` otherwise.
+- Trial run and rollback as public API: `ota_api_is_on_trial()`,
+  `ota_api_trial_begin()`, `ota_api_trial_confirm()` and `ota_api_trial_reject()`,
+  with `CONFIG_OTA_API_TRIAL_TIMEOUT_S` as the default deadline. This was
+  previously hand-written in the advanced example; every project using the
+  component now gets the safety net that stops a device from being stranded on a
+  broken update. `confirm` and `reject` work without `begin`, so a self-test that
+  finishes inside `app_main` needs no timer at all.
+- A guarantee worth relying on: `event_cb` at `OTA_API_EVENT_SUCCEEDED` runs
+  *before* `ota_api_start_task()` restarts the device, and — unlike the events
+  that arrive mid-transfer — it may take its time. That is the hook an
+  application needs to close connections or warn an operator between the image
+  being written and the reboot, and it removes the reason to hand-roll an update
+  task around the blocking `ota_api_update()`.
+- `event_cb` can stop an update at `OTA_API_EVENT_STARTED` and
+  `OTA_API_EVENT_PROGRESS`, which `validate_cb` could not: an update can now be
+  refused before the header is read, or abandoned mid-download and at the final
+  100% report, right up until `esp_https_ota_finish()` makes the image bootable.
+
+### Removed
+
+- `ota_api_progress_cb_t` and `ota_api_validate_cb_t`. See the migration below.
+- **Breaking.** The `OTA_API_EVENT` event base and everything posted under it.
+  `esp_https_ota` already posts its own `ESP_HTTPS_OTA_EVENT` to the default
+  event loop during any update — `START`, `CONNECTED`, `GET_IMG_DESC`,
+  `WRITE_FLASH`, `UPDATE_BOOT_PARTITION`, `FINISH`, `ABORT` and more — so this
+  component was duplicating notifications onto the same loop. An application
+  that watched `OTA_API_EVENT` should register its handler for
+  `ESP_HTTPS_OTA_EVENT` instead. What that base cannot give is a percentage
+  (its `WRITE_FLASH` reports bytes written with no total) or a way to stop an
+  update; both are what `event_cb` is for.
+- `esp_event` from the component's public `REQUIRES`, now that no event base is
+  declared in `ota-api.h`. An application that relied on the header pulling in
+  `esp_event.h` must include it itself.
+- `ota_api_event_id_t` values are now callback arguments only; the enum stays,
+  and the `OTA_API_EVENT_*` names are unchanged.
+
+### Migration from 0.2.0
+
+`ESP_ERR_OTA_VALIDATE_FAILED` is declared in `esp_ota_ops.h`, which the public
+header deliberately does not pull in — include it where you return the constant.
+
+An application that only watched `OTA_API_EVENT` on the default event loop
+changes one line, the event base it registers for, and then switches on
+`esp_https_ota_event_t` instead of `ota_api_event_id_t`:
+
+```c
+/* 0.2.0 */
+esp_event_handler_register(OTA_API_EVENT, ESP_EVENT_ANY_ID, &handler, NULL);
+
+/* 0.3.0 — same default event loop, base owned by esp_https_ota */
+esp_event_handler_register(ESP_HTTPS_OTA_EVENT, ESP_EVENT_ANY_ID, &handler, NULL);
+```
+
+```c
+/* 0.2.0 */
+static void on_progress(const ota_api_progress_t *progress, void *user_ctx)
+{
+  draw_bar(progress->percent);
+}
+
+static bool on_validate(const esp_app_desc_t *new_app, void *user_ctx)
+{
+  return strcmp(new_app->version, esp_app_get_description()->version) != 0;
+}
+
+config.progress_cb = on_progress;
+config.validate_cb = on_validate;
+```
+
+```c
+/* 0.3.0 */
+#include "esp_ota_ops.h"  // for ESP_ERR_OTA_VALIDATE_FAILED
+
+static esp_err_t on_ota_event(ota_api_event_id_t event_id, const void *data, void *user_ctx)
+{
+  switch (event_id)
+  {
+    case OTA_API_EVENT_PROGRESS:
+    {
+      draw_bar(((const ota_api_progress_t *)data)->percent);
+      break;
+    }
+
+    case OTA_API_EVENT_IMAGE_DESC:
+    {
+      const esp_app_desc_t *new_app = (const esp_app_desc_t *)data;
+      if (strcmp(new_app->version, esp_app_get_description()->version) == 0)
+        return ESP_ERR_OTA_VALIDATE_FAILED;  // what `return false` used to mean
+      break;
+    }
+
+    default:
+      break;
+  }
+
+  return ESP_OK;  // what `void` and `return true` used to mean
+}
+
+config.event_cb = on_ota_event;
+```
+
 ## [0.2.0] - 2026-09-03
 
 ### Added

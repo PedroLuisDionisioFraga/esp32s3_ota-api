@@ -15,4 +15,17 @@ menu "OTA API Configuration"
             FreeRTOS priority of the background task created by
             ota_api_start_task(). Used when ota_api_config_t.task_priority is 0.
 
+    config OTA_API_TRIAL_TIMEOUT_S
+        int "Trial window before automatic rollback (seconds)"
+        range 10 3600
+        default 120
+        help
+            How long ota_api_trial_begin() waits for ota_api_trial_confirm()
+            before rolling back to the previous firmware. Used when its
+            timeout_s argument is 0.
+
+            This is what keeps an unattended device from being stranded on a
+            broken update: long enough for whatever confirms the image to
+            react, short enough that a field device recovers on its own.
+
 endmenu

@@ -11,20 +11,31 @@ This is the other three examples combined, plus what only the step-by-step
 
 | Capability | How |
 | --- | --- |
-| Live download percentage | `ota_api_config_t::progress_cb`, throttled by `progress_interval_ms` |
-| Lifecycle notifications | `OTA_API_EVENT` handlers on the default event loop |
-| Refusing a redundant image | `validate_cb` compares the offered version with the running one |
+| Live download percentage | `ota_api_config_t::event_cb` at `OTA_API_EVENT_PROGRESS`, throttled by `progress_interval_ms` |
+| Refusing a redundant image | the same `event_cb` returns `ESP_ERR_OTA_VALIDATE_FAILED` at `OTA_API_EVENT_IMAGE_DESC` |
+| Acting between the write and the reboot | the same `event_cb` at `OTA_API_EVENT_SUCCEEDED` |
 | Cancelling mid-download | `ota_api_abort()` |
 | Surviving a flaky link | `partial_download` — the image arrives over several ranged requests |
-| Operator-approved rollback | `esp_ota_mark_app_valid_cancel_rollback()` driven by the `confirm` command |
-| Unattended safety net | Automatic rollback when nobody confirms within the trial window |
+| Operator-approved rollback | `ota_api_trial_confirm()` driven by the `confirm` command |
+| Unattended safety net | `ota_api_trial_begin()` — automatic rollback when nobody confirms in time |
 
-Progress arrives through **both** reporting mechanisms at once, on purpose: the
-percentage line comes from the direct callback, while "started / image header /
-succeeded / failed" is consumed as events. A real application would normally
-pick one — the callback for the short path, events when unrelated parts of the
-system (a display, an MQTT reporter) need to follow an update they did not
-start.
+Everything the application does about an update is in **one function**,
+`on_ota_event_cb()`, and everything the operator does is in the console
+commands. That is the whole file — there is no OTA task, no semaphore and no
+trial state machine, because `ota_api_start_task()` owns the first and
+`ota_api_trial_begin()` the last.
+
+The callback earns its keep at two moments a plain notification could not
+handle. At `OTA_API_EVENT_IMAGE_DESC` its **return value** stops the update, so
+a redundant version is refused before a byte reaches flash. At
+`OTA_API_EVENT_SUCCEEDED` the transfer is over but `ota_api_start_task()` has
+not restarted the device yet, so that is where the network is shut down and the
+operator is told what happens next — the reason this example no longer needs an
+update task of its own.
+
+If a part of the system that did *not* start the update needs to follow one,
+register a handler for `ESP_HTTPS_OTA_EVENT` instead. `esp_https_ota` posts that
+base by itself during any update; this component adds nothing to the event loop.
 
 ## Console commands
 
@@ -41,8 +52,9 @@ help                list the commands
 ## The trial run
 
 With `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`, the bootloader starts a newly
-written image in `ESP_OTA_IMG_PENDING_VERIFY` and waits to be told the firmware
-is good. **This example never confirms itself** — it hands the decision to you:
+written image on trial and waits to be told the firmware is good. `app_main`
+calls `ota_api_trial_begin(0)` to arm the deadline, and **this example never
+confirms itself** — it hands the decision to you:
 
 ```text
   ==========================================================
@@ -59,8 +71,9 @@ Three outcomes:
 - Nothing — the trial window expires and the device rolls back on its own.
 
 That last one is the point of the timeout: a device in the field with nobody
-watching must recover from a bad update without help. Tune the window under
-**Example Configuration -> Trial window before automatic rollback**.
+watching must recover from a bad update without help. The window belongs to the
+component, not to this example: tune it under **OTA API Configuration -> Trial
+window before automatic rollback**.
 
 ## Configuration
 
@@ -71,14 +84,15 @@ idf.py menuconfig
 - **Example Connection Configuration** — Wi-Fi SSID/password or Ethernet.
 - **Example Configuration -> default firmware upgrade url endpoint** — URL used
   by a bare `ota` command.
-- **Example Configuration -> Trial window before automatic rollback** — seconds
-  to wait for `confirm` (default 120).
 - **Example Configuration -> Minimum gap between progress reports** — rate limit
   for the progress line, in ms (default 250). Setting it to 0 reports every
   chunk and floods the console on a fast link.
 - **Example Configuration -> Bytes per ranged HTTP request** — size of each
   ranged request (default 65536). Smaller recovers faster from a dropped
   connection, at the cost of more request overhead.
+- **OTA API Configuration -> Trial window before automatic rollback** — seconds
+  to wait for `confirm` (default 120). This one is the component's, so any
+  project using it gets the same safety net.
 
 `sdkconfig.defaults` already enables `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`
 and `CONFIG_ESP_HTTPS_OTA_ENABLE_PARTIAL_DOWNLOAD`, and adds
@@ -118,15 +132,22 @@ state       : confirmed
 
 ota> ota https://192.168.0.3:8070/hello_world.bin
 Starting update from https://192.168.0.3:8070/hello_world.bin
-I (12345) ota_advanced: event: download started
+I (12345) ota-api: Downloading update from https://192.168.0.3:8070/hello_world.bin
+I (12410) ota-api: New image: project 'hello_world' version '2'
 
-  offered : hello_world version 2
+  offered : hello_world version 2 (built Sep  3 2026 18:20:11)
   running : ota_api_advanced_example version 1
-I (12420) ota_advanced: event: image header read, version '2' built Sep  3 2026 18:20:11
+I (12460) ota-api: Image size: 872448 bytes
   [##########################....]  87%  742/852 KB  61.3 KB/s  ETA 1s
-I (25980) ota_advanced: event: image written successfully
+I (25980) ota-api: Update written, new firmware boots on next restart
+
   update stored. Rebooting into it for its trial run.
+I (26990) ota-api: OTA succeeded, rebooting...
 ```
+
+The `ota-api` lines come from the component, the indented ones from this
+example's `event_cb`. Log timestamps and the exact percentage of course differ
+from run to run.
 
 After the reboot:
 
@@ -144,10 +165,14 @@ Running `ota` again with the image already installed stops before a single byte
 is written to flash:
 
 ```text
-  offered : hello_world version 2
+  offered : hello_world version 2 (built Sep  3 2026 18:20:11)
   running : hello_world version 2
   same version already running, refusing. Use 'ota <url> force' to install anyway.
+W (13102) ota-api: event_cb returned ESP_ERR_OTA_VALIDATE_FAILED for event 1
+E (13108) ota-api: Update failed (ESP_ERR_OTA_VALIDATE_FAILED)
+
   update did not complete: ESP_ERR_OTA_VALIDATE_FAILED
+E (13120) ota-api: OTA task finished with error
 ```
 
 ### Cancelling a download
@@ -157,8 +182,11 @@ ota> ota
   [########......................]  27%  230/852 KB  58.9 KB/s  ETA 10s
 ota> abort
 Stop requested, unwinding...
-E (31002) ota_advanced: event: update failed (ESP_ERR_NOT_FINISHED)
+W (31002) ota-api: Update stopped on request
+E (31008) ota-api: Update failed (ESP_ERR_NOT_FINISHED)
+
   update did not complete: ESP_ERR_NOT_FINISHED
+E (31020) ota-api: OTA task finished with error
 ```
 
 The abort is cooperative: the component notices the request between downloaded

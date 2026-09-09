@@ -7,19 +7,6 @@ menu "Example Configuration"
             URL used by the 'ota' console command when it is called without an
             argument. Any other URL can still be passed at runtime: ota <url>.
 
-    config EXAMPLE_TRIAL_TIMEOUT_S
-        int "Trial window before automatic rollback (seconds)"
-        range 10 3600
-        default 120
-        help
-            After booting a freshly downloaded image the device waits this long
-            for a 'confirm' on the console. If nobody confirms, it rolls back to
-            the previous firmware.
-
-            This is what keeps an unattended device from being stranded on a
-            broken update: set it long enough for an operator to react, short
-            enough that a field device recovers on its own.
-
     config EXAMPLE_PROGRESS_INTERVAL_MS
         int "Minimum gap between progress reports (ms)"
         range 0 10000
