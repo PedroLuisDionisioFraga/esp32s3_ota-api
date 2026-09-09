@@ -91,9 +91,28 @@ typedef struct
 /**
  * @brief Called for every event an update reports
  *
- * Runs on the task performing the update, in the middle of it: it must not
- * block, and it must not start another update. How often
- * OTA_API_EVENT_PROGRESS arrives is set by
+ * Runs on the task performing the update, synchronously: the update waits for
+ * it to return. What that costs depends on when it fires.
+ *
+ * OTA_API_EVENT_STARTED, OTA_API_EVENT_IMAGE_DESC and OTA_API_EVENT_PROGRESS
+ * arrive mid-transfer, with the connection open and the server waiting: format
+ * a line and return. Blocking there deadlocks nothing — the component holds no
+ * lock across the call — but it stalls the download, delays the moment an
+ * ota_api_abort() is noticed, and can let the server time the connection out.
+ *
+ * OTA_API_EVENT_SUCCEEDED and OTA_API_EVENT_FAILED arrive once everything is
+ * over: the connection is closed, the esp_https_ota handle is freed and the
+ * update slot is released. Taking time there is allowed, and is sometimes the
+ * point — under ota_api_start_task() this callback is the only code that runs
+ * between the image being written and the device restarting into it, so
+ * closing a connection or warning an operator belongs here.
+ *
+ * No event may start another update, but for two different reasons. Before the
+ * outcome the slot is still held and a nested ota_api_update() is refused with
+ * ESP_ERR_INVALID_STATE. After it the slot is free, so the nested call would be
+ * accepted and would recurse into this callback on the same stack.
+ *
+ * How often OTA_API_EVENT_PROGRESS arrives is set by
  * ota_api_config_t::progress_interval_ms — a report the rate limit swallows
  * never reaches this callback, so OTA_API_EVENT_PROGRESS is not the place to
  * poll for a decision made elsewhere. ota_api_abort() is checked on every
@@ -264,9 +283,119 @@ esp_err_t ota_api_abort(void);
 /**
  * @brief Whether an update is currently running
  *
+ * A snapshot, not a lock: it can go stale the instant it returns. It also goes
+ * false before an update is finished with the device — under
+ * ota_api_start_task() it is already false while event_cb handles
+ * OTA_API_EVENT_SUCCEEDED, which is the window before the restart. An
+ * application that must not start a second update in that window needs a flag
+ * of its own.
+ *
  * @return true while an update is in progress
  */
 bool ota_api_is_running(void);
+
+/* ========================================================================== */
+/*                           TRIAL RUN AND ROLLBACK                           */
+/* ========================================================================== */
+
+/*
+ * There is deliberately no self-test callback here, and the reason is worth
+ * understanding before looking for one.
+ *
+ * event_cb answers "did the transfer work" — it fires at OTA_API_EVENT_SUCCEEDED
+ * once the image is written and set as the boot partition. That is a different
+ * question from "does the new firmware work", which can only be answered after
+ * the reboot, by the new image itself, in a process where nothing that ran the
+ * update still exists. There is nothing left for the component to call back
+ * into, so the application calls the component instead:
+ *
+ *     if (ota_api_is_on_trial())
+ *       self_test_passed() ? ota_api_trial_confirm() : ota_api_trial_reject();
+ *
+ * What "works" means is the product's to define — a server handshake, a sensor
+ * answering, a GPIO jumper — which is the other reason it is not a callback the
+ * component could usefully shape.
+ *
+ * If the verdict needs time to form, arm a deadline with ota_api_trial_begin()
+ * and answer whenever it is known. The deadline is not the test: it is what
+ * happens when nobody answers at all, so a device that boots an image too
+ * broken to reach its own self-test still recovers.
+ */
+
+/**
+ * @brief Whether the running image still has to prove itself
+ *
+ * With CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE the bootloader starts a freshly
+ * written image in ESP_OTA_IMG_PENDING_VERIFY and expects the application to
+ * confirm it or reject it. Until one of those happens, the next reset goes back
+ * to the previous firmware.
+ *
+ * Answered from the partition table on every call rather than from a cached
+ * flag, so it is right however the image was confirmed — including by
+ * esp_ota_mark_app_valid_cancel_rollback() called directly.
+ *
+ * @return true while the running image is on trial. false once it is confirmed,
+ *         when it runs from the factory partition (not an OTA slot, so it has
+ *         no state), or in a build without rollback support
+ */
+bool ota_api_is_on_trial(void);
+
+/**
+ * @brief Start the countdown that rolls back an image nobody confirms
+ *
+ * Arms a one-shot timer that calls esp_ota_mark_app_invalid_rollback_and_reboot()
+ * when it expires — the safety net that keeps an unattended device from being
+ * stranded on a broken update. Call it once whatever is going to answer is in a
+ * position to: a console, an operator, a self-test that takes its time.
+ *
+ * An application whose self-test finishes before app_main returns needs none of
+ * this and can call ota_api_trial_confirm() or ota_api_trial_reject() directly.
+ *
+ * @param timeout_s Seconds to wait for a verdict. 0 = use
+ *                  CONFIG_OTA_API_TRIAL_TIMEOUT_S
+ * @return esp_err_t
+ *         - ESP_OK: Countdown started
+ *         - ESP_ERR_INVALID_STATE: The running image is not on trial, so there
+ *           is nothing to roll back from, or a countdown is already running
+ *         - Any error propagated from esp_timer
+ */
+esp_err_t ota_api_trial_begin(uint32_t timeout_s);
+
+/**
+ * @brief Keep the image on trial and cancel the rollback
+ *
+ * Marks the running image valid and stops the countdown ota_api_trial_begin()
+ * started, if there was one. The two are independent: a synchronous self-test
+ * that never armed a timer confirms with this call alone.
+ *
+ * @return esp_err_t
+ *         - ESP_OK: Image confirmed, the device boots it for good from now on
+ *         - ESP_ERR_INVALID_STATE: The running image is not on trial, so there
+ *           is nothing to confirm
+ *         - Any error propagated from esp_ota_mark_app_valid_cancel_rollback()
+ */
+esp_err_t ota_api_trial_confirm(void);
+
+/**
+ * @brief Reject the running image and reboot into the previous firmware
+ *
+ * Does not return when it works: the device restarts into the last image the
+ * bootloader considers valid. It comes back only when there is nothing to go
+ * back to, and then the current firmware carries on running.
+ *
+ * Unlike ota_api_trial_confirm() this does not require the image to be on
+ * trial: abandoning a build that was confirmed and later turned out to be bad
+ * is a legitimate thing to ask for.
+ *
+ * @return esp_err_t
+ *         - ESP_ERR_OTA_ROLLBACK_FAILED: No valid image to go back to. Declared
+ *           in esp_ota_ops.h
+ *         - ESP_FAIL: Running from the factory partition, which is not an OTA
+ *           slot and cannot be rolled back
+ *         - Any other error propagated from
+ *           esp_ota_mark_app_invalid_rollback_and_reboot()
+ */
+esp_err_t ota_api_trial_reject(void);
 
 #ifdef __cplusplus
 }

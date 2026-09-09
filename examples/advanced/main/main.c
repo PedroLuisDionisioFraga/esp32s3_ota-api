@@ -15,20 +15,21 @@
  * It combines what the other examples show separately and adds what only the
  * step-by-step esp_https_ota flow makes possible:
  *
+ * Everything the application does about an update lives in one callback,
+ * on_ota_event_cb(), and everything the operator does lives in the console
+ * commands. There is no OTA task, no semaphore and no trial state machine here:
+ * ota_api_start_task() owns the first and ota_api_trial_begin() the last, which
+ * is what makes this file short enough to lift into a real project.
+ *
  * - Live progress. A throttled callback prints a percentage bar with transfer
  *   rate and ETA, redrawn in place.
- * - Both reporting paths at once. The percentage, the image description and
- *   the version decision come from ota_api_config_t::event_cb, the single
- *   callback the component invokes for every event, while the lifecycle is
- *   also watched through ESP_HTTPS_OTA_EVENT — a base esp_https_ota posts to
- *   the default event loop by itself, with no help from this component. The
- *   two are shown side by side because they are good at different things: only
- *   the callback carries a payload and can answer back, only the event loop
- *   reaches code that did not start the update.
- * - Version check before writing. That same callback inspects the incoming
- *   image header at OTA_API_EVENT_IMAGE_DESC and returns
- *   ESP_ERR_OTA_VALIDATE_FAILED for firmware whose version matches the one
- *   already running, unless 'force' is passed.
+ * - Version check before writing. The same callback inspects the incoming image
+ *   header at OTA_API_EVENT_IMAGE_DESC and returns ESP_ERR_OTA_VALIDATE_FAILED
+ *   for firmware whose version matches the one already running, unless 'force'
+ *   is passed.
+ * - Acting between the write and the reboot. At OTA_API_EVENT_SUCCEEDED the
+ *   transfer is over but the restart has not happened yet, so that is where the
+ *   network is shut down cleanly and the operator is told what comes next.
  * - Abort mid-download. 'abort' asks the component to unwind cleanly, leaving
  *   the running firmware untouched.
  * - Ranged downloads. The image is fetched over several HTTP requests so a
@@ -48,13 +49,10 @@
 #include "esp_app_desc.h"
 #include "esp_console.h"
 #include "esp_event.h"
-#include "esp_https_ota.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
-#include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
 #include "ota-api.h"
@@ -64,21 +62,23 @@
 #include "esp_wifi.h"
 #endif
 
-#define OTA_URL_SIZE          256
-#define OTA_WORKER_STACK_SIZE 8192
-#define OTA_WORKER_PRIORITY   5
-#define PROGRESS_BAR_WIDTH    30
+#define OTA_URL_SIZE       256
+#define PROGRESS_BAR_WIDTH 30
 
 static const char *TAG = "ota_advanced";
 
-static SemaphoreHandle_t s_ota_request;
 static char s_ota_url[OTA_URL_SIZE];
-static volatile bool s_ota_requested;
 static volatile bool s_force_update;
 
-/* Set while this boot is a trial run that nobody has confirmed yet */
-static volatile bool s_awaiting_confirmation;
-static esp_timer_handle_t s_trial_timer;
+/* Raised from the moment 'ota' is accepted until the update is done with the
+ * device. ota_api_is_running() cannot stand in for this: it goes false as soon
+ * as the update ends, which under ota_api_start_task() is a whole second before
+ * the reboot — the SUCCEEDED handler below disconnects and waits in there — and
+ * it is not yet true in the instant between ota_api_start_task() returning and
+ * the task it spawned claiming the slot. Both windows would let a second 'ota'
+ * rewrite s_ota_url under a download that is still reading it.
+ */
+static volatile bool s_ota_pending;
 
 /* Download rate is measured against the moment the transfer started */
 static int64_t s_download_start_us;
@@ -119,16 +119,16 @@ static void print_progress_bar(const ota_api_progress_t *progress)
 }
 
 /**
- * @brief Single entry point for everything the component reports
+ * @brief Everything the application does about an update, in one function
  *
- * Runs on the OTA worker task in the middle of the download, so it may only
- * format a line and return — no blocking work belongs here. What makes it more
- * than a notification is the return value: ESP_OK lets the update carry on,
- * anything else stops it and comes straight back out of ota_api_update().
+ * Runs on the OTA task. During the transfer — STARTED, IMAGE_DESC, PROGRESS —
+ * it may only format a line and return, because the download waits for it. At
+ * SUCCEEDED and FAILED the transfer is over and it may take its time, which is
+ * what lets this example use ota_api_start_task() and still control what
+ * happens between the image being written and the reboot.
  *
- * Lifecycle logging deliberately does NOT happen here. on_https_ota_event()
- * does it from the IDF's own event loop, which keeps both mechanisms visible
- * side by side without the console printing the same thing twice.
+ * The return value is what makes it more than a notification: ESP_OK lets the
+ * update carry on, anything else stops it.
  */
 static esp_err_t on_ota_event_cb(ota_api_event_id_t event_id, const void *data, void *user_ctx)
 {
@@ -136,14 +136,23 @@ static esp_err_t on_ota_event_cb(ota_api_event_id_t event_id, const void *data, 
 
   switch (event_id)
   {
+    case OTA_API_EVENT_STARTED:
+    {
+      /* The connection is up and the first byte is about to arrive, which is
+       * where a download rate should be measured from — the TLS handshake that
+       * preceded it is not download time. Safe to stamp here because event_cb
+       * is a direct call: STARTED is dispatched on this task before any
+       * OTA_API_EVENT_PROGRESS can be.
+       */
+      s_download_start_us = esp_timer_get_time();
+      break;
+    }
+
     case OTA_API_EVENT_IMAGE_DESC:
     {
       const esp_app_desc_t *new_app = (const esp_app_desc_t *)data;
       const esp_app_desc_t *running = esp_app_get_description();
 
-      /* The description only reaches the application here: the IDF's own
-       * GET_IMG_DESC event announces the step but carries no payload.
-       */
       printf("\n  offered : %s version %s (built %s %s)\n",
              new_app->project_name,
              new_app->version,
@@ -166,171 +175,39 @@ static esp_err_t on_ota_event_cb(ota_api_event_id_t event_id, const void *data, 
       break;
     }
 
+    case OTA_API_EVENT_SUCCEEDED:
+    {
+      /* Taking a second here is deliberate. The transfer is over, the socket is
+       * closed and the update slot is already released; the only thing still
+       * pending is ota_api_start_task()'s esp_restart(), which does not happen
+       * until this returns. That makes this callback the hook the example needs
+       * to shut the network down and say what is about to happen — the reason
+       * it no longer keeps an OTA worker task of its own.
+       *
+       * The leading newline closes the progress bar, which stops without one.
+       */
+      printf("\n  update stored. Rebooting into it for its trial run.\n");
+      example_disconnect();
+      vTaskDelay(1000 / portTICK_PERIOD_MS);
+      break;
+    }
+
+    case OTA_API_EVENT_FAILED:
+    {
+      /* Reached by this callback's own verdict too: the
+       * ESP_ERR_OTA_VALIDATE_FAILED returned at OTA_API_EVENT_IMAGE_DESC above
+       * comes back here as the outcome of the update it stopped.
+       */
+      s_ota_pending = false;
+      printf("\n  update did not complete: %s\n", esp_err_to_name(*(const esp_err_t *)data));
+      break;
+    }
+
     default:
       break;
   }
 
   return ESP_OK;
-}
-
-/* ========================================================================== */
-/*                     LIFECYCLE VIA THE IDF'S OWN EVENT LOOP                 */
-/* ========================================================================== */
-
-/**
- * @brief Handles ESP_HTTPS_OTA_EVENT from the default event loop
- *
- * This base belongs to esp_https_ota, not to this component: the IDF posts it
- * on its own during any update, so following an update costs nothing but a
- * handler registration. That is what lets unrelated parts of an application —
- * a display task, an MQTT reporter — watch an update they did not start,
- * without the component having to duplicate the notifications.
- *
- * What these events cannot do is carry a decision back, or a percentage:
- * WRITE_FLASH reports bytes written with no total. Both of those come from
- * on_ota_event_cb() instead, which is the point of having the two side by
- * side.
- */
-static void on_https_ota_event(void *arg, esp_event_base_t base, int32_t event_id, void *event_data)
-{
-  (void)arg;
-  (void)base;
-  (void)event_data;
-
-  switch (event_id)
-  {
-    case ESP_HTTPS_OTA_START:
-    {
-      ESP_LOGI(TAG, "event: update started");
-      break;
-    }
-
-    case ESP_HTTPS_OTA_CONNECTED:
-    {
-      ESP_LOGI(TAG, "event: connected to the server");
-      break;
-    }
-
-    case ESP_HTTPS_OTA_GET_IMG_DESC:
-    {
-      // The description itself reaches on_ota_event_cb(); this is just the step
-      ESP_LOGI(TAG, "event: reading the image header");
-      break;
-    }
-
-    case ESP_HTTPS_OTA_UPDATE_BOOT_PARTITION:
-    {
-      printf("\n");
-      ESP_LOGI(TAG, "event: boot partition updated");
-      break;
-    }
-
-    case ESP_HTTPS_OTA_FINISH:
-    {
-      ESP_LOGI(TAG, "event: update finished");
-      break;
-    }
-
-    case ESP_HTTPS_OTA_ABORT:
-    {
-      printf("\n");
-      ESP_LOGW(TAG, "event: update aborted");
-      break;
-    }
-
-    default:
-      break;
-  }
-}
-
-/* ========================================================================== */
-/*                          TRIAL RUN AND ROLLBACK                            */
-/* ========================================================================== */
-
-/**
- * @brief Fires when nobody confirmed the image in time
- *
- * An unattended device must not be left waiting forever: an image nobody
- * vouches for goes back to the previous firmware on its own.
- */
-static void trial_timeout(void *arg)
-{
-  (void)arg;
-
-  if (!s_awaiting_confirmation)
-    return;
-
-  ESP_LOGE(TAG, "No confirmation within %d s, rolling back", CONFIG_EXAMPLE_TRIAL_TIMEOUT_S);
-  esp_ota_mark_app_invalid_rollback_and_reboot();  // Does not return
-}
-
-static void start_trial_window(void)
-{
-  s_awaiting_confirmation = true;
-
-  printf("\n");
-  printf("  ==========================================================\n");
-  printf("  This firmware is ON TRIAL and has not been confirmed yet.\n");
-  printf("  Type 'confirm' to keep it, or 'rollback' to go back now.\n");
-  printf("  Without a confirmation it rolls back in %d seconds.\n", CONFIG_EXAMPLE_TRIAL_TIMEOUT_S);
-  printf("  ==========================================================\n\n");
-
-  const esp_timer_create_args_t timer_args = {
-    .callback = &trial_timeout,
-    .name = "ota_trial",
-  };
-  ESP_ERROR_CHECK(esp_timer_create(&timer_args, &s_trial_timer));
-  ESP_ERROR_CHECK(esp_timer_start_once(s_trial_timer, (uint64_t)CONFIG_EXAMPLE_TRIAL_TIMEOUT_S * 1000000));
-}
-
-/* ========================================================================== */
-/*                               OTA WORKER                                   */
-/* ========================================================================== */
-
-static void ota_worker_task(void *arg)
-{
-  (void)arg;
-
-  ota_api_config_t ota_config = OTA_API_CONFIG_DEFAULT();
-  ota_config.event_cb = on_ota_event_cb;
-  ota_config.progress_interval_ms = CONFIG_EXAMPLE_PROGRESS_INTERVAL_MS;
-  // Ranged requests keep a flaky link from costing the whole transfer
-  ota_config.partial_download = true;
-  ota_config.max_http_request_size = CONFIG_EXAMPLE_HTTP_REQUEST_SIZE;
-#ifdef CONFIG_EXAMPLE_SKIP_COMMON_NAME_CHECK
-  ota_config.skip_common_name_check = true;
-#endif
-
-  while (1)
-  {
-    xSemaphoreTake(s_ota_request, portMAX_DELAY);
-
-    ota_config.url = s_ota_url;
-    ESP_LOGI(TAG, "Update requested: %s", ota_config.url);
-
-    /* Stamped here rather than from the STARTED event: events are delivered
-     * asynchronously, so the first progress callbacks can arrive before the
-     * handler runs and would compute the rate against an unset timestamp.
-     */
-    s_download_start_us = esp_timer_get_time();
-
-    esp_err_t err = ota_api_update(&ota_config);
-
-    s_ota_requested = false;
-    s_force_update = false;
-
-    if (err != ESP_OK)
-    {
-      // The device is untouched and still serving the console: retry at will
-      printf("  update did not complete: %s\n", esp_err_to_name(err));
-      continue;
-    }
-
-    printf("  update stored. Rebooting into it for its trial run.\n");
-    example_disconnect();
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
-    esp_restart();
-  }
 }
 
 /* ========================================================================== */
@@ -350,7 +227,7 @@ static int cmd_ota(int argc, char **argv)
       url = argv[i];
   }
 
-  if (s_ota_requested || ota_api_is_running())
+  if (s_ota_pending || ota_api_is_running())
   {
     printf("An update is already running. Use 'abort' to stop it.\n");
     return 1;
@@ -363,14 +240,33 @@ static int cmd_ota(int argc, char **argv)
   }
 
   snprintf(s_ota_url, sizeof(s_ota_url), "%s", url);
-  printf("Starting update from %s%s\n", s_ota_url, force ? " (forced)" : "");
-
-  /* Claimed before returning: otherwise a second 'ota' typed immediately after
-   * would pass the check above and overwrite the URL the worker is reading.
-   */
   s_force_update = force;
-  s_ota_requested = true;
-  xSemaphoreGive(s_ota_request);
+  s_ota_pending = true;
+
+  /* ota_api_start_task() copies the struct, so this local dies here safely. It
+   * does not copy what the pointers point at, which is why url is the file
+   * scope s_ota_url and not a stack buffer.
+   */
+  ota_api_config_t ota_config = OTA_API_CONFIG_DEFAULT();
+  ota_config.url = s_ota_url;
+  ota_config.event_cb = on_ota_event_cb;
+  ota_config.progress_interval_ms = CONFIG_EXAMPLE_PROGRESS_INTERVAL_MS;
+  // Ranged requests keep a flaky link from costing the whole transfer
+  ota_config.partial_download = true;
+  ota_config.max_http_request_size = CONFIG_EXAMPLE_HTTP_REQUEST_SIZE;
+#ifdef CONFIG_EXAMPLE_SKIP_COMMON_NAME_CHECK
+  ota_config.skip_common_name_check = true;
+#endif
+
+  esp_err_t err = ota_api_start_task(&ota_config);
+  if (err != ESP_OK)
+  {
+    s_ota_pending = false;
+    printf("Could not start the update: %s\n", esp_err_to_name(err));
+    return 1;
+  }
+
+  printf("Starting update from %s%s\n", s_ota_url, force ? " (forced)" : "");
   return 0;
 }
 
@@ -395,21 +291,14 @@ static int cmd_confirm(int argc, char **argv)
   (void)argc;
   (void)argv;
 
-  if (!s_awaiting_confirmation)
-  {
-    printf("This firmware is not on trial, nothing to confirm\n");
-    return 1;
-  }
-
-  esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
+  // Stops the countdown as well, so nothing is left to disarm here
+  esp_err_t err = ota_api_trial_confirm();
   if (err != ESP_OK)
   {
     printf("Could not confirm the image: %s\n", esp_err_to_name(err));
     return 1;
   }
 
-  s_awaiting_confirmation = false;
-  esp_timer_stop(s_trial_timer);
   printf("Image confirmed, rollback cancelled\n");
   return 0;
 }
@@ -420,7 +309,7 @@ static int cmd_rollback(int argc, char **argv)
   (void)argv;
 
   printf("Rolling back to the previous firmware...\n");
-  esp_err_t err = esp_ota_mark_app_invalid_rollback_and_reboot();
+  esp_err_t err = ota_api_trial_reject();
 
   // Only reached when there is no previous image to go back to
   printf("Rollback not possible: %s\n", esp_err_to_name(err));
@@ -456,7 +345,7 @@ static int cmd_status(int argc, char **argv)
   (void)argv;
 
   printf("update running    : %s\n", ota_api_is_running() ? "yes" : "no");
-  printf("awaiting confirm  : %s\n", s_awaiting_confirmation ? "yes" : "no");
+  printf("awaiting confirm  : %s\n", ota_api_is_on_trial() ? "yes" : "no");
   return 0;
 }
 
@@ -534,10 +423,6 @@ void app_main(void)
 
   ESP_ERROR_CHECK(esp_netif_init());
   ESP_ERROR_CHECK(esp_event_loop_create_default());
-  /* esp_https_ota posts this base by itself during any update, so watching one
-   * costs nothing more than registering here.
-   */
-  ESP_ERROR_CHECK(esp_event_handler_register(ESP_HTTPS_OTA_EVENT, ESP_EVENT_ANY_ID, &on_https_ota_event, NULL));
 
   /* This helper function configures Wi-Fi or Ethernet, as selected in
    * menuconfig. Read "Establishing Wi-Fi or Ethernet Connection" section in
@@ -552,13 +437,6 @@ void app_main(void)
   esp_wifi_set_ps(WIFI_PS_NONE);
 #endif  // CONFIG_EXAMPLE_CONNECT_WIFI
 
-  s_ota_request = xSemaphoreCreateBinary();
-  ESP_ERROR_CHECK(s_ota_request != NULL ? ESP_OK : ESP_ERR_NO_MEM);
-
-  BaseType_t created =
-    xTaskCreate(&ota_worker_task, "ota_worker", OTA_WORKER_STACK_SIZE, NULL, OTA_WORKER_PRIORITY, NULL);
-  ESP_ERROR_CHECK(created == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
-
   esp_console_repl_t *repl = NULL;
   esp_console_repl_config_t repl_config = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
   repl_config.prompt = "ota>";
@@ -569,14 +447,18 @@ void app_main(void)
 
   ESP_ERROR_CHECK(esp_console_start_repl(repl));
 
-  /* Deliberately last: the trial banner is the first thing the operator should
-   * see, and the console has to be up to accept 'confirm'.
+  /* Deliberately last: the banner is the first thing the operator should see,
+   * and the console has to be up to accept 'confirm'. No state check is needed
+   * around it — ota_api_trial_begin() refuses an image that is not on trial.
    */
-  esp_ota_img_states_t ota_state;
-  const esp_partition_t *running = esp_ota_get_running_partition();
-  if (esp_ota_get_state_partition(running, &ota_state) == ESP_OK && ota_state == ESP_OTA_IMG_PENDING_VERIFY)
+  if (ota_api_trial_begin(0) == ESP_OK)
   {
-    start_trial_window();
+    printf("\n");
+    printf("  ==========================================================\n");
+    printf("  This firmware is ON TRIAL and has not been confirmed yet.\n");
+    printf("  Type 'confirm' to keep it, or 'rollback' to go back now.\n");
+    printf("  Without a confirmation it rolls back in %d seconds.\n", CONFIG_OTA_API_TRIAL_TIMEOUT_S);
+    printf("  ==========================================================\n\n");
   }
   else
   {

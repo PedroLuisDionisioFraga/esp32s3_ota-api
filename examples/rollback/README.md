@@ -17,11 +17,11 @@ which then decides when to `esp_restart()`.
 ## How the flow works
 
 ```text
-boot ──▶ esp_ota_get_state_partition()
+boot ──▶ ota_api_is_on_trial()
           │
-          ├─ PENDING_VERIFY ──▶ run_diagnostic()
-          │                       ├─ pass ──▶ esp_ota_mark_app_valid_cancel_rollback()
-          │                       └─ fail ──▶ esp_ota_mark_app_invalid_rollback_and_reboot()
+          ├─ true ──────────▶ run_diagnostic()
+          │                       ├─ pass ──▶ ota_api_trial_confirm()
+          │                       └─ fail ──▶ ota_api_trial_reject()
           │                                     └──▶ reboots into the previous firmware
           └─ confirmed / factory ──▶ continue
                                       │
@@ -49,15 +49,13 @@ images are downloaded by OTA.
 ### First boot after USB flashing
 
 The bootloader starts the image in the `factory` partition. The application
-gets the partition from which it is currently running with
-`esp_ota_get_running_partition()` ([main/main.c](main/main.c)). It then asks
-`esp_ota_get_state_partition()` for that partition's OTA state
-([main/main.c](main/main.c)).
+asks `ota_api_is_on_trial()` whether the running image still has to prove
+itself ([main/main.c](main/main.c)).
 
-The `factory` partition is not an OTA slot, so it normally has no OTA state.
-The function returns an error, the `else` branch logs that no self-test is
-required, and `pending_verify` remains `false`. This is expected and is not a
-failure. Consequently, the confirmation or rollback block is skipped.
+The `factory` partition is not an OTA slot, so it has no OTA state at all.
+`ota_api_is_on_trial()` answers `false` — it treats the missing state as "this
+image was never on trial" rather than as an error, which is exactly right here.
+`pending_verify` stays `false` and the confirmation block is skipped.
 
 The application connects to the network with `example_connect()` and checks
 the result with `ESP_ERROR_CHECK(connect_err)`
@@ -75,20 +73,23 @@ the factory image because it is not a pending OTA image.
 ### Second boot after OTA
 
 After the restart, the bootloader starts the newly downloaded OTA image. With
-`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`, a new image starts in
-`ESP_OTA_IMG_PENDING_VERIFY`. The same call to
-`esp_ota_get_state_partition()` now succeeds and writes that state into
-`ota_state`. The comparison
-`ota_state == ESP_OTA_IMG_PENDING_VERIFY` sets `pending_verify` to `true`
+`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`, a new image starts on trial, so the
+same `ota_api_is_on_trial()` call now answers `true`
 ([main/main.c](main/main.c)).
+
+Note what this example does **not** do: it never calls `ota_api_trial_begin()`.
+That function arms a deadline for a verdict that arrives later — an operator
+typing `confirm`, as in the advanced example. Here the verdict is known before
+`app_main` returns, so there is nothing to wait for. `ota_api_trial_confirm()`
+and `ota_api_trial_reject()` stand on their own precisely so that a synchronous
+self-test does not have to arm a timer it would cancel a line later.
 
 The application connects to the network again. This connection is the
 self-test. If it succeeds, `run_diagnostic()` returns `true` and
-`esp_ota_mark_app_valid_cancel_rollback()` marks the new image as valid
+`ota_api_trial_confirm()` marks the new image as valid
 ([main/main.c](main/main.c)). If it fails, the application calls
-`esp_ota_mark_app_invalid_rollback_and_reboot()`
-([main/main.c](main/main.c)); the bootloader then tries to start the previous
-valid image.
+`ota_api_trial_reject()` ([main/main.c](main/main.c)), which does not return:
+the bootloader starts the previous valid image instead.
 
 The confirmation function does not start the OTA. It only confirms an image
 that was already downloaded and booted. If the new firmware never calls it,
@@ -101,9 +102,10 @@ prevent confirmation.
 Rollback does not create a backup. It only returns to an image that already
 exists and is valid in another partition. For reliable rollback, keep a valid
 previous image in the other OTA slot. If no suitable previous image exists,
-`esp_ota_mark_app_invalid_rollback_and_reboot()` can return an error and there
-may be no firmware to which the bootloader can return. USB flashing or another
-recovery mechanism is then required.
+`ota_api_trial_reject()` **returns** instead of rebooting — with
+`ESP_ERR_OTA_ROLLBACK_FAILED` — and the current firmware carries on running.
+There is then no firmware for the bootloader to return to, and USB flashing or
+another recovery mechanism is required.
 
 Also note the difference between a connection failure and an endless
 connection attempt. If `example_connect()` returns an error, the diagnostic
@@ -157,7 +159,7 @@ On the next boot the log shows:
 ```text
 I (...) ota_rollback: Partition state: PENDING_VERIFY, self-test required
 I (...) ota_rollback: Diagnostic PASSED: network is up
-I (...) ota_rollback: Image confirmed, rollback cancelled
+I (...) ota-api: Image confirmed, rollback cancelled
 ```
 
 **Rollback** — power off the access point (or change its password) right after
@@ -168,6 +170,7 @@ returns to the previous firmware:
 I (...) ota_rollback: Partition state: PENDING_VERIFY, self-test required
 E (...) ota_rollback: Diagnostic FAILED: could not join the network (ESP_ERR_TIMEOUT)
 E (...) ota_rollback: Rejecting this image and rebooting into the previous firmware
+W (...) ota-api: Rejecting the running image, rebooting into the previous firmware
 ```
 
 Confirm with `idf.py -p PORT monitor` that the partition reported after the

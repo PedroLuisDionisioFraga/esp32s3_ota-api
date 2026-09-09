@@ -3,12 +3,15 @@
  * @brief OTA rollback example using the ota-api component
  *
  * Shows the self-test flow that protects a device from a broken update. When
- * the bootloader starts a freshly written image for the first time it leaves
- * it in ESP_OTA_IMG_PENDING_VERIFY: the application must run a diagnostic and
- * then either confirm the image with esp_ota_mark_app_valid_cancel_rollback()
- * or reject it with esp_ota_mark_app_invalid_rollback_and_reboot(), which
- * reboots back into the previous firmware. Without that confirmation the
+ * the bootloader starts a freshly written image for the first time it leaves it
+ * on trial: the application must run a diagnostic and then either keep the
+ * image with ota_api_trial_confirm() or discard it with ota_api_trial_reject(),
+ * which reboots back into the previous firmware. Without that confirmation the
  * bootloader rolls back on the next reset.
+ *
+ * The verdict here is known before app_main returns, so no deadline is needed
+ * and ota_api_trial_begin() never appears. The advanced example shows the other
+ * shape, where an operator answers and a timer is the fallback.
  *
  * The diagnostic used here is whether the device manages to join the network.
  * Replace run_diagnostic() with whatever "this build actually works" means for
@@ -40,8 +43,8 @@ static const char *TAG = "ota_rollback";
 /**
  * @brief Decide whether the running image is healthy
  *
- * Called only while the image is in ESP_OTA_IMG_PENDING_VERIFY. Returning
- * false makes the device roll back to the previous firmware.
+ * Called only while the image is on trial. Returning false makes the device
+ * roll back to the previous firmware.
  */
 static bool run_diagnostic(esp_err_t connect_err)
 {
@@ -90,21 +93,14 @@ void app_main(void)
 
   /* An image booted for the first time stays in PENDING_VERIFY until the
    * application confirms it. Running from the factory partition, or from a
-   * build without CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE, there is no such
-   * state and esp_ota_get_state_partition() fails — that is not an error.
+   * build without CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE, there is no such state
+   * and ota_api_is_on_trial() answers false — that is not an error.
+   *
+   * Read before the network is brought up, because the answer is what decides
+   * whether the connection result below is a diagnostic or just a connection.
    */
-  bool pending_verify = false;
-  esp_ota_img_states_t ota_state;
-  const esp_partition_t *running = esp_ota_get_running_partition();
-  if (esp_ota_get_state_partition(running, &ota_state) == ESP_OK)
-  {
-    pending_verify = (ota_state == ESP_OTA_IMG_PENDING_VERIFY);
-    ESP_LOGI(TAG, "Partition state: %s", pending_verify ? "PENDING_VERIFY, self-test required" : "already confirmed");
-  }
-  else
-  {
-    ESP_LOGI(TAG, "Partition has no OTA state, self-test not required");
-  }
+  bool pending_verify = ota_api_is_on_trial();
+  ESP_LOGI(TAG, "Partition state: %s", pending_verify ? "PENDING_VERIFY, self-test required" : "not on trial");
 
   ESP_ERROR_CHECK(esp_netif_init());
   ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -116,17 +112,21 @@ void app_main(void)
    */
   esp_err_t connect_err = example_connect();
 
+  /* The verdict is already known, so there is no window to open: this example
+   * never calls ota_api_trial_begin(). Confirming and rejecting stand on their
+   * own precisely so a self-test that finishes inside app_main does not have to
+   * arm a timer it would cancel a line later.
+   */
   if (pending_verify)
   {
     if (run_diagnostic(connect_err))
     {
-      ESP_ERROR_CHECK(esp_ota_mark_app_valid_cancel_rollback());
-      ESP_LOGI(TAG, "Image confirmed, rollback cancelled");
+      ESP_ERROR_CHECK(ota_api_trial_confirm());
     }
     else
     {
       ESP_LOGE(TAG, "Rejecting this image and rebooting into the previous firmware");
-      esp_ota_mark_app_invalid_rollback_and_reboot();  // Does not return
+      ota_api_trial_reject();  // Does not return
     }
   }
 
