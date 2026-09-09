@@ -10,6 +10,8 @@
  * @date 2026
  */
 
+#include <strings.h>
+
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_netif.h"
@@ -86,6 +88,16 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
   return ESP_OK;
 }
 
+/**
+ * @brief Whether the URL asks for plain HTTP rather than HTTPS
+ *
+ * Scheme names are case-insensitive, so this cannot be a plain strncmp.
+ */
+static bool is_plain_http(const char *url)
+{
+  return strncasecmp(url, "http://", 7) == 0;
+}
+
 esp_err_t ota_api_build_http_config(const ota_api_config_t *config, esp_http_client_config_t *http_config,
                                     struct ifreq *ifr)
 {
@@ -94,7 +106,21 @@ esp_err_t ota_api_build_http_config(const ota_api_config_t *config, esp_http_cli
   http_config->keep_alive_enable = true;
   http_config->skip_cert_common_name_check = config->skip_common_name_check;
 
-  if (config->cert_pem)
+  if (is_plain_http(config->url))
+  {
+    /* Nothing to configure: server verification is a TLS notion and there is
+     * no TLS here. Demanding a certificate for an http:// URL would reject a
+     * transfer that is insecure rather than misconfigured — whether insecure
+     * is acceptable is esp_https_ota's call, not this component's.
+     */
+#ifdef CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP
+    ESP_LOGW(TAG, "Plain HTTP: the image is neither encrypted nor authenticated in transit");
+#else
+    ESP_LOGE(TAG, "URL is plain HTTP but CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP is disabled");
+    return ESP_ERR_INVALID_ARG;
+#endif
+  }
+  else if (config->cert_pem)
   {
     http_config->cert_pem = config->cert_pem;
   }

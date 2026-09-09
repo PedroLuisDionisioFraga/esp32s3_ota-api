@@ -17,7 +17,7 @@ OTA API is a component for ESP-IDF that simplifies HTTPS over-the-air firmware u
 - Stop an update from inside that callback: return anything but `ESP_OK` and it unwinds, leaving the running firmware untouched — refuse a version already installed before a single byte is written.
 - Cancel an update in flight with `ota_api_abort()`, leaving the running firmware untouched.
 - Optional ranged downloads (`partial_download`) for links that drop long transfers.
-- Server validation via the trusted root certificate bundle (default) or a custom PEM certificate.
+- Server validation via the trusted root certificate bundle (default) or a custom PEM certificate. A plain `http://` URL needs no certificate at all, only `CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP` — see below.
 - Optional binding of the OTA connection to a specific network interface (Wi-Fi STA, Ethernet, Thread).
 - Task stack size and priority configurable per call or via `menuconfig` (`OTA API Configuration`).
 
@@ -95,6 +95,19 @@ static esp_err_t on_ota_event(ota_api_event_id_t event_id, const void *data, voi
 ota_config.event_cb = on_ota_event;
 ota_config.progress_interval_ms = 250;  // rate limit, 0 = every chunk
 ```
+
+### Downloading over plain HTTP
+
+For a local server or a closed network, an `http://` URL works with no certificate and no bundle — set `CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y` and leave `cert_pem` at `NULL`:
+
+```kconfig
+CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=n   # optional, saves the flash the bundle costs
+```
+
+`cert_pem` is ignored for such a URL: server verification is a TLS notion and there is no TLS to verify. Without that option the update is refused with `ESP_ERR_INVALID_ARG` before it connects.
+
+Be clear about what you give up: the image is neither encrypted nor authenticated in transit, so anyone on the path can read it or replace it. For anything reachable from outside a network you control, use HTTPS — or keep HTTP and sign the image, with [Secure Boot](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/security/secure-boot-v2.html), so a swapped binary fails verification at boot.
 
 ### Following an update from elsewhere
 

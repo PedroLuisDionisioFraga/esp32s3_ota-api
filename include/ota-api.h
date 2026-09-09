@@ -139,7 +139,10 @@ typedef struct
   const char *cert_pem;          /**< Server certificate in PEM format.
                                       NULL = use the trusted root certificate
                                       bundle (requires
-                                      MBEDTLS_CERTIFICATE_BUNDLE) */
+                                      MBEDTLS_CERTIFICATE_BUNDLE).
+                                      Ignored when url is http://, which needs
+                                      CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP and no
+                                      certificate at all */
   bool skip_common_name_check;   /**< Skip server certificate CN validation */
   esp_netif_t *bind_netif;       /**< Bind the HTTP connection to this network
                                       interface. NULL = any */
@@ -208,8 +211,9 @@ typedef struct
  * @param config Update configuration (url is required)
  * @return esp_err_t
  *         - ESP_OK: New firmware written; boots on next restart
- *         - ESP_ERR_INVALID_ARG: NULL config/url, or cert_pem is NULL while
- *           the certificate bundle is disabled
+ *         - ESP_ERR_INVALID_ARG: NULL config/url; cert_pem is NULL while the
+ *           certificate bundle is disabled; or an http:// url while
+ *           CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP is disabled
  *         - ESP_ERR_INVALID_STATE: Another update is already running
  *         - ESP_ERR_OTA_VALIDATE_FAILED: event_cb refused the image, or the
  *           downloaded image is incomplete or invalid
