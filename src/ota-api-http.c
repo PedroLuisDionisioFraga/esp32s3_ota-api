@@ -126,7 +126,16 @@ esp_err_t ota_api_build_http_config(const ota_api_config_t *config, esp_http_cli
   }
   else
   {
-#ifdef CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
+#ifdef CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY
+    /* No certificate given, but esp-tls is globally configured to skip server
+     * verification (a lab-only option). Attaching the root bundle here would
+     * arm a verify callback that rejects a self-signed server before that
+     * global skip takes effect, so leave cert_pem and crt_bundle_attach unset
+     * and let the handshake run without a trust anchor.
+     */
+    http_config->skip_cert_common_name_check = true;
+    ESP_LOGW(TAG, "cert_pem is NULL and CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY is set; OTA server not authenticated");
+#elif defined(CONFIG_MBEDTLS_CERTIFICATE_BUNDLE)
     http_config->crt_bundle_attach = esp_crt_bundle_attach;
 #else
     ESP_LOGE(TAG, "cert_pem is NULL and MBEDTLS_CERTIFICATE_BUNDLE is disabled");
