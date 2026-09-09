@@ -54,7 +54,8 @@ bool ota_api_abort_requested(void);
  * @brief Build the HTTP client configuration shared by every update
  *
  * @param ifr Storage for the bound interface name; must outlive the update
- * @return ESP_ERR_INVALID_ARG when no way to validate the server is available
+ * @return ESP_ERR_INVALID_ARG when the server can be neither validated nor
+ *         explicitly skipped
  */
 esp_err_t ota_api_build_http_config(const ota_api_config_t *config, esp_http_client_config_t *http_config,
                                     struct ifreq *ifr);

@@ -18,7 +18,7 @@ OTA API is a component for ESP-IDF that simplifies HTTPS over-the-air firmware u
 - Cancel an update in flight with `ota_api_abort()`, leaving the running firmware untouched.
 - Automatic rollback for an image nobody vouches for: `ota_api_trial_begin()` arms a deadline, `ota_api_trial_confirm()` keeps the firmware, `ota_api_trial_reject()` goes back. A device that boots a broken update recovers on its own.
 - Optional ranged downloads (`partial_download`) for links that drop long transfers.
-- Server validation via the trusted root certificate bundle (default) or a custom PEM certificate. A plain `http://` URL needs no certificate at all, only `CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP` — see below.
+- Server validation via the trusted root certificate bundle (default) or a custom PEM certificate — or none at all on a lab build (`CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY`). A plain `http://` URL needs no certificate either, only `CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP` — see below.
 - Optional binding of the OTA connection to a specific network interface (Wi-Fi STA, Ethernet, Thread).
 - Task stack size and priority configurable per call or via `menuconfig` (`OTA API Configuration`).
 
@@ -108,6 +108,19 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=n   # optional, saves the flash the bundle cos
 `cert_pem` is ignored for such a URL: server verification is a TLS notion and there is no TLS to verify. Without that option the update is refused with `ESP_ERR_INVALID_ARG` before it connects.
 
 Be clear about what you give up: the image is neither encrypted nor authenticated in transit, so anyone on the path can read it or replace it. For anything reachable from outside a network you control, use HTTPS — or keep HTTP and sign the image, with [Secure Boot](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/security/secure-boot-v2.html), so a swapped binary fails verification at boot.
+
+### HTTPS to a server with a self-signed certificate
+
+On a closed test bench the OTA server often has a self-signed certificate that no bundle will trust. The clean fix is to pass that certificate in `cert_pem` — the examples do this; `examples/common/ota_server.py` writes one with the server IP in `subjectAltName`.
+
+When that is impractical, tell esp-tls to skip verification globally and leave `cert_pem` at `NULL`:
+
+```kconfig
+CONFIG_ESP_TLS_INSECURE=y
+CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y
+```
+
+With that option set the component does not attach the root bundle for a `NULL` `cert_pem`: the TLS handshake runs with no trust anchor and the server is not authenticated. The transfer is still encrypted, but anyone who can intercept it can serve their own image. Use it only on a network you control, and prefer a pinned `cert_pem` everywhere else.
 
 ### Trial run and rollback
 

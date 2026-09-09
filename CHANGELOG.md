@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-09-09
+
+### Fixed
+
+- With `cert_pem` left `NULL`, the HTTP client always attached the trusted root
+  certificate bundle, ignoring `CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY`. Against a
+  server with a self-signed certificate the download failed at the TLS handshake
+  (`esp-x509-crt-bundle: No matching trusted root certificate found`, surfacing as
+  `ESP_ERR_HTTP_CONNECT`). When that option is set the component now leaves both
+  `cert_pem` and `crt_bundle_attach` unset and forces `skip_cert_common_name_check`,
+  so the handshake completes without a trust anchor. Builds without the option are
+  unaffected — a `NULL` `cert_pem` still attaches the bundle.
+
 ## [0.3.1] - 2026-09-09
 
 ### Changed

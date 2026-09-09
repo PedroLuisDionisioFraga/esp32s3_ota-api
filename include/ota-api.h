@@ -93,8 +93,10 @@ typedef struct
   const char *url;               /**< Firmware image URL (required) */
   const char *cert_pem;          /**< Server certificate, PEM. NULL = trusted
                                       root bundle (needs
-                                      MBEDTLS_CERTIFICATE_BUNDLE). Ignored for an
-                                      http:// URL */
+                                      MBEDTLS_CERTIFICATE_BUNDLE), or no server
+                                      verification when
+                                      CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY is
+                                      set. Ignored for an http:// URL */
   bool skip_common_name_check;   /**< Skip server certificate CN validation */
   esp_netif_t *bind_netif;       /**< Bind the connection to this interface.
                                       NULL = any */
@@ -147,9 +149,9 @@ typedef struct
  * @param config Update configuration (url is required)
  * @return
  *         - ESP_OK: new firmware written; boots on next restart
- *         - ESP_ERR_INVALID_ARG: NULL config/url; cert_pem NULL with the
- *           certificate bundle disabled; or http:// URL with
- *           CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP disabled
+ *         - ESP_ERR_INVALID_ARG: NULL config/url; cert_pem NULL with neither the
+ *           certificate bundle nor CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY
+ *           enabled; or http:// URL with CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP disabled
  *         - ESP_ERR_INVALID_STATE: another update is already running
  *         - ESP_ERR_OTA_VALIDATE_FAILED: event_cb refused the image, or it is
  *           incomplete or invalid
