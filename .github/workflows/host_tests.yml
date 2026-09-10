@@ -1,0 +1,24 @@
+name: Host Tests
+
+on:
+  pull_request:
+
+jobs:
+  ota-server:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The server needs nothing past the standard library to be tested: the
+      # certificate code that uses `cryptography` is not exercised here.
+      - name: Install pytest
+        run: pip install pytest
+
+      - name: Test examples/common/ota_server.py
+        run: python -m pytest examples/common -v
