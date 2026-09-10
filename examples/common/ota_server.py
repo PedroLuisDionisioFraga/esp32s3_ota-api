@@ -8,10 +8,14 @@ package (already part of the ESP-IDF Python environment), so no external
 `openssl` binary is required -- the script behaves the same on Windows and
 Linux.
 
+With --http the image is served over plain HTTP instead and no certificate is
+read or generated; the device then needs CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y.
+
 Relative paths are resolved against the directory of this script, so the same
 command works from any example directory:
 
     python ../common/ota_server.py
+    python ../common/ota_server.py --http
 """
 import argparse
 import datetime
@@ -20,6 +24,7 @@ import ipaddress
 import os
 import socket
 import ssl
+from typing import Optional
 
 try:
     from cryptography import x509
@@ -164,31 +169,46 @@ def ensure_certificate(cert_dir: str, host_ip: str, regenerate: bool, allow_gene
     print('')
 
 
-def start_https_server(host_ip: str, image_dir: str, server_port: int, cert_dir: str) -> None:
+def start_server(host_ip: str, image_dir: str, server_port: int, cert_dir: Optional[str]) -> None:
+    """Serve image_dir over HTTPS, or over plain HTTP when cert_dir is None."""
     os.chdir(image_dir)
-
-    cert_file = os.path.join(cert_dir, CERT_NAME)
-    key_file = os.path.join(cert_dir, KEY_NAME)
 
     httpd = http.server.HTTPServer((host_ip, server_port), http.server.SimpleHTTPRequestHandler)
 
-    ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    ssl_context.load_cert_chain(certfile=cert_file, keyfile=key_file)
+    if cert_dir is None:
+        scheme = 'http'
+    else:
+        scheme = 'https'
+        cert_file = os.path.join(cert_dir, CERT_NAME)
+        key_file = os.path.join(cert_dir, KEY_NAME)
 
-    httpd.socket = ssl_context.wrap_socket(httpd.socket, server_side=True)
-    print(f'Starting HTTPS server at https://{host_ip}:{server_port}')
+        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ssl_context.load_cert_chain(certfile=cert_file, keyfile=key_file)
+        httpd.socket = ssl_context.wrap_socket(httpd.socket, server_side=True)
+
+    print(f'Starting {scheme.upper()} server at {scheme}://{host_ip}:{server_port}')
     print(f'Serving files from: {os.path.abspath(image_dir)}')
-    print(f'Using certificates from: {os.path.abspath(cert_dir)}')
+    if cert_dir is None:
+        print('Plain HTTP: the device must be built with CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y')
+    else:
+        print(f'Using certificates from: {os.path.abspath(cert_dir)}')
     for image in sorted(name for name in os.listdir('.') if name.endswith('.bin')):
-        print(f'  firmware upgrade url: https://{host_ip}:{server_port}/{image}')
+        print(f'  firmware upgrade url: {scheme}://{host_ip}:{server_port}/{image}')
     httpd.serve_forever()
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description='Start a local HTTPS server for the ota-api examples.')
+    parser = argparse.ArgumentParser(description='Start a local HTTPS (or plain HTTP) server for the ota-api examples.')
     parser.add_argument('--host', help='LAN IP to bind to, for example 192.168.1.50 (default: auto-detected)')
-    parser.add_argument('--regen-cert', action='store_true', help='Always generate a new certificate')
-    parser.add_argument(
+    # The certificate options only make sense for HTTPS, so --http excludes them
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        '--http',
+        action='store_true',
+        help='Serve over plain HTTP; no certificate is read or generated',
+    )
+    mode.add_argument('--regen-cert', action='store_true', help='Always generate a new certificate')
+    mode.add_argument(
         '--no-gen-cert',
         action='store_true',
         help='Never generate a certificate; fail if a usable one is not present',
@@ -199,17 +219,14 @@ def main() -> None:
         default='ota',
         help='Directory that contains the firmware .bin file to serve (default: ota)',
     )
-    parser.add_argument('server_port', nargs='?', type=int, default=8070, help='HTTPS server port (default: 8070)')
+    parser.add_argument('server_port', nargs='?', type=int, default=8070, help='Server port (default: 8070)')
     parser.add_argument(
         'cert_dir',
         nargs='?',
         default='certs',
-        help=f'Directory that contains {CERT_NAME} and {KEY_NAME} (default: certs)',
+        help=f'Directory that contains {CERT_NAME} and {KEY_NAME} (default: certs; ignored with --http)',
     )
     args = parser.parse_args()
-
-    if args.regen_cert and args.no_gen_cert:
-        parser.error('--regen-cert and --no-gen-cert are mutually exclusive')
 
     this_dir = os.path.dirname(os.path.realpath(__file__))
     host_ip = args.host or detect_host_ip()
@@ -219,8 +236,11 @@ def main() -> None:
     if not os.path.isdir(image_dir):
         raise SystemExit(f'error: firmware directory not found: {image_dir}')
 
-    ensure_certificate(cert_dir, host_ip, args.regen_cert, not args.no_gen_cert)
-    start_https_server(host_ip, image_dir, args.server_port, cert_dir)
+    if args.http:
+        start_server(host_ip, image_dir, args.server_port, None)
+    else:
+        ensure_certificate(cert_dir, host_ip, args.regen_cert, not args.no_gen_cert)
+        start_server(host_ip, image_dir, args.server_port, cert_dir)
 
 
 if __name__ == '__main__':

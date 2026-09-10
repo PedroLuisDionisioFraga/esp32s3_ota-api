@@ -2,9 +2,10 @@ name: Build Examples
 
 on:
   pull_request:
+  # Not main: everything reaches it through a pull request, which has already
+  # run this matrix. Building the merge commit again would only repeat it.
   push:
     branches:
-      - main
       - dev
 
 jobs:
