@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `examples/common/ota_server.py --http` serves the firmware over plain HTTP, with no
+  certificate read or generated. The device must be built with
+  `CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y` to accept the `http://` URL it prints.
+
 ## [0.3.3] - 2026-09-09
 
 ### Fixed
