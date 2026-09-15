@@ -23,6 +23,12 @@ command works from any example directory:
 
     python ../common/ota_server.py
     python ../common/ota_server.py --http
+    python ../common/ota_server.py ota 8070 certs --throttle-kbps 32
+    python ../common/ota_server.py ota 8070 certs --delay-per-request 2
+
+Slow OTA lab: if the device pulls the image in one GET 200 (no partial 206 chunks),
+use --throttle-kbps. --delay-per-request only stacks when there are many HTTP requests
+(one sleep per response body).
 """
 import argparse
 import datetime
@@ -34,6 +40,7 @@ import os
 import re
 import socket
 import ssl
+import time
 from http import HTTPStatus
 from typing import List, Optional, Tuple
 
@@ -221,10 +228,33 @@ class OtaRequestHandler(http.server.SimpleHTTPRequestHandler):
     """
 
     honour_range = True
+    throttle_bps = 0
+    delay_per_request_sec = 0.0
     # Bounds how long a connection a device left open can hold on to its thread
     timeout = 60
 
+    def copyfile(self, source, outputfile):
+        if self.throttle_bps <= 0:
+            return super().copyfile(source, outputfile)
+
+        bufsize = 64 * 1024
+        start = time.monotonic()
+        sent = 0
+        while True:
+            chunk = source.read(bufsize)
+            if not chunk:
+                break
+            outputfile.write(chunk)
+            sent += len(chunk)
+            expected = sent / self.throttle_bps
+            elapsed = time.monotonic() - start
+            if expected > elapsed:
+                time.sleep(expected - elapsed)
+
     def send_head(self):
+        if self.delay_per_request_sec > 0:
+            time.sleep(self.delay_per_request_sec)
+
         byte_range = self.headers.get('Range') if self.honour_range else None
         path = self.translate_path(self.path)
         if byte_range is None or not os.path.isfile(path):
@@ -253,6 +283,8 @@ class OtaRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header('Content-Length', str(len(body)))
         self.send_header('Last-Modified', self.date_time_string(int(os.path.getmtime(path))))
         self.end_headers()
+        if self.throttle_bps > 0:
+            return _ThrottledSource(io.BytesIO(body), self.throttle_bps)
         return io.BytesIO(body)
 
     def end_headers(self):
@@ -269,6 +301,27 @@ class OtaRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.log_message('"%s" %s %s range=%s', self.requestline, str(code), str(size), byte_range)
 
 
+class _ThrottledSource(io.BufferedReader):
+    """File-like reader that caps read throughput (for 206 Partial Content bodies)."""
+
+    def __init__(self, raw: io.BytesIO, bps: int):
+        super().__init__(raw)
+        self._throttle_bps = bps
+        self._throttle_start = time.monotonic()
+        self._throttle_sent = 0
+
+    def read(self, size=-1):
+        data = super().read(size)
+        if not data or self._throttle_bps <= 0:
+            return data
+        self._throttle_sent += len(data)
+        expected = self._throttle_sent / self._throttle_bps
+        elapsed = time.monotonic() - self._throttle_start
+        if expected > elapsed:
+            time.sleep(expected - elapsed)
+        return data
+
+
 def build_server(
     host_ip: str,
     image_dir: str,
@@ -276,12 +329,20 @@ def build_server(
     cert_dir: Optional[str] = None,
     honour_range: bool = True,
     keep_alive: bool = False,
+    throttle_kbps: float = 0.0,
+    delay_per_request_sec: float = 0.0,
 ) -> http.server.ThreadingHTTPServer:
     """Server for image_dir over HTTPS, or over plain HTTP when cert_dir is None."""
+    throttle_bps = int(throttle_kbps * 1024) if throttle_kbps > 0 else 0
     handler_class = type(
         'Handler',
         (OtaRequestHandler,),
-        {'honour_range': honour_range, 'protocol_version': 'HTTP/1.1' if keep_alive else 'HTTP/1.0'},
+        {
+            'honour_range': honour_range,
+            'protocol_version': 'HTTP/1.1' if keep_alive else 'HTTP/1.0',
+            'throttle_bps': throttle_bps,
+            'delay_per_request_sec': max(0.0, delay_per_request_sec),
+        },
     )
     httpd = http.server.ThreadingHTTPServer(
         (host_ip, server_port), functools.partial(handler_class, directory=image_dir)
@@ -305,9 +366,20 @@ def start_server(
     cert_dir: Optional[str],
     honour_range: bool = True,
     keep_alive: bool = False,
+    throttle_kbps: float = 0.0,
+    delay_per_request_sec: float = 0.0,
 ) -> None:
     """Serve image_dir over HTTPS, or over plain HTTP when cert_dir is None."""
-    httpd = build_server(host_ip, image_dir, server_port, cert_dir, honour_range, keep_alive)
+    httpd = build_server(
+        host_ip,
+        image_dir,
+        server_port,
+        cert_dir,
+        honour_range,
+        keep_alive,
+        throttle_kbps,
+        delay_per_request_sec,
+    )
     scheme = 'http' if cert_dir is None else 'https'
 
     print(f'Starting {scheme.upper()} server at {scheme}://{host_ip}:{server_port}')
@@ -324,6 +396,10 @@ def start_server(
         print('Connections: kept open between requests (HTTP/1.1)')
     else:
         print('Connections: closed after each response (HTTP/1.0)')
+    if throttle_kbps > 0:
+        print(f'Download throttle: {throttle_kbps:g} KiB/s ({int(throttle_kbps * 1024)} B/s)')
+    if delay_per_request_sec > 0:
+        print(f'Delay before each response body: {delay_per_request_sec:g} s')
     for image in sorted(name for name in os.listdir(image_dir) if name.endswith('.bin')):
         print(f'  firmware upgrade url: {scheme}://{host_ip}:{server_port}/{image}')
     httpd.serve_forever()
@@ -356,6 +432,26 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help='Speak HTTP/1.1 and keep the connection open, so every range can use the same connection',
     )
     parser.add_argument(
+        '--throttle-kbps',
+        type=float,
+        default=0.0,
+        metavar='KBPS',
+        help=(
+            'Cap firmware download speed (KiB/s) for slow OTA / TWDT tests; '
+            'preferred when the client downloads in one GET 200; 0 = unlimited'
+        ),
+    )
+    parser.add_argument(
+        '--delay-per-request',
+        type=float,
+        default=0.0,
+        metavar='SEC',
+        help=(
+            'Sleep SEC before each response body (once per HTTP request). '
+            'Useful with many 206 partial chunks; for a single GET 200 use --throttle-kbps instead; 0 = off'
+        ),
+    )
+    parser.add_argument(
         'image_dir',
         nargs='?',
         default='ota',
@@ -383,11 +479,32 @@ def main() -> None:
     if not os.path.isdir(image_dir):
         raise SystemExit(f'error: firmware directory not found: {image_dir}')
 
+    throttle_kbps = max(0.0, args.throttle_kbps)
+    delay_per_request_sec = max(0.0, args.delay_per_request)
+
     if args.http:
-        start_server(host_ip, image_dir, args.server_port, None, honour_range, args.keep_alive)
+        start_server(
+            host_ip,
+            image_dir,
+            args.server_port,
+            None,
+            honour_range,
+            args.keep_alive,
+            throttle_kbps,
+            delay_per_request_sec,
+        )
     else:
         ensure_certificate(cert_dir, host_ip, args.regen_cert, not args.no_gen_cert)
-        start_server(host_ip, image_dir, args.server_port, cert_dir, honour_range, args.keep_alive)
+        start_server(
+            host_ip,
+            image_dir,
+            args.server_port,
+            cert_dir,
+            honour_range,
+            args.keep_alive,
+            throttle_kbps,
+            delay_per_request_sec,
+        )
 
 
 if __name__ == '__main__':
