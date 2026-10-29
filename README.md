@@ -18,6 +18,7 @@ OTA API is a component for ESP-IDF that simplifies HTTPS over-the-air firmware u
 - Cancel an update in flight with `ota_api_abort()`, leaving the running firmware untouched.
 - Automatic rollback for an image nobody vouches for: `ota_api_trial_begin()` arms a deadline, `ota_api_trial_confirm()` keeps the firmware, `ota_api_trial_reject()` goes back. A device that boots a broken update recovers on its own.
 - Optional ranged downloads (`partial_download`) for links that drop long transfers.
+- Optional integrity check (`sha256`): the downloaded file must hash to the SHA-256 you give, or the update stops before the image is made bootable.
 - Server validation via the trusted root certificate bundle (default) or a custom PEM certificate — or none at all on a lab build (`CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY`). A plain `http://` URL needs no certificate either, only `CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP` — see below.
 - Optional binding of the OTA connection to a specific network interface (Wi-Fi STA, Ethernet, Thread).
 - Task stack size and priority configurable per call or via `menuconfig` (`OTA API Configuration`).
@@ -95,6 +96,18 @@ static esp_err_t on_ota_event(ota_api_event_id_t event_id, const void *data, voi
 ota_config.event_cb = on_ota_event;
 ota_config.progress_interval_ms = 250;  // rate limit, 0 = every chunk
 ```
+
+### Checking the image's SHA-256
+
+When the server publishes the image's SHA-256 (the `sha256sum` of the `.bin`), hand it over and the component checks the download against it:
+
+```c
+static uint8_t expected[OTA_API_SHA256_LEN];  // must outlive the update, like url
+// ... fill `expected` from the 64 hex characters the server sent ...
+ota_config.sha256 = expected;
+```
+
+The check runs once the whole file is in the staging partition and before `esp_https_ota_finish()`: the component reads the partition back and hashes it, so it costs one flash read of the image. On a mismatch the update stops with `ESP_ERR_INVALID_CRC`, the staged image is discarded, and nothing is made bootable. It complements the image's own validation instead of replacing it: `esp_https_ota_finish()` still checks the header, the appended digest and, with Secure Boot, the signature.
 
 ### Downloading over plain HTTP
 
