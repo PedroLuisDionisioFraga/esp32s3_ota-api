@@ -81,4 +81,19 @@ esp_err_t ota_api_dispatch_event(const ota_api_config_t *config, ota_api_event_i
 esp_err_t ota_api_report_progress(esp_https_ota_handle_t handle, const ota_api_config_t *config, int total_bytes,
                                   int64_t *last_report_us, bool force);
 
+/* ========================================================================== */
+/*                     ota-api-verify.c: INTEGRITY CHECK                      */
+/* ========================================================================== */
+
+/**
+ * @brief Hash what was downloaded and compare it with the expected SHA-256
+ *
+ * Call once the whole image is received and before esp_https_ota_finish().
+ *
+ * @param expected OTA_API_SHA256_LEN bytes
+ * @return ESP_OK on a match, ESP_ERR_INVALID_CRC on a mismatch, or the error
+ *         that kept the check from running
+ */
+esp_err_t ota_api_verify_sha256(esp_https_ota_handle_t handle, const uint8_t *expected);
+
 #endif /* OTA_API_PRIVATE_H */

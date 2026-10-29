@@ -53,6 +53,9 @@ typedef enum
 /*                           TYPES AND STRUCTURES                             */
 /* ========================================================================== */
 
+/** Length in bytes of a SHA-256 digest, as ota-api compares one */
+#define OTA_API_SHA256_LEN 32
+
 /**
  * @brief Download progress snapshot
  */
