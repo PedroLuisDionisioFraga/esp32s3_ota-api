@@ -53,7 +53,7 @@ typedef enum
 /*                           TYPES AND STRUCTURES                             */
 /* ========================================================================== */
 
-/** Length in bytes of a SHA-256 digest, as ota-api compares one */
+/** Length in bytes of ota_api_config_t::sha256 */
 #define OTA_API_SHA256_LEN 32
 
 /**
@@ -119,6 +119,9 @@ typedef struct
                                       CONFIG_ESP_HTTPS_OTA_ENABLE_PARTIAL_DOWNLOAD */
   size_t max_http_request_size;  /**< Bytes per request when partial_download is
                                       set. 0 = esp_https_ota chooses */
+  const uint8_t *sha256;         /**< OTA_API_SHA256_LEN bytes the downloaded
+                                      file must hash to, checked before it is
+                                      made bootable. NULL = no check */
 } ota_api_config_t;
 
 /**
@@ -137,6 +140,7 @@ typedef struct
     .progress_interval_ms = 0,       \
     .partial_download = false,       \
     .max_http_request_size = 0,      \
+    .sha256 = NULL,                  \
   }
 
 /* ========================================================================== */
@@ -158,6 +162,8 @@ typedef struct
  *         - ESP_ERR_INVALID_STATE: another update is already running
  *         - ESP_ERR_OTA_VALIDATE_FAILED: event_cb refused the image, or it is
  *           incomplete or invalid
+ *         - ESP_ERR_INVALID_CRC: the downloaded file does not hash to
+ *           config->sha256; nothing was made bootable
  *         - ESP_ERR_NOT_FINISHED: stopped by ota_api_abort()
  *         - any other value event_cb returned, or an error from esp_https_ota
  */
