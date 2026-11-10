@@ -71,17 +71,26 @@ jobs:
           tag="${{ steps.version.outputs.tag }}"
 
           if gh release view "$tag" >/dev/null 2>&1; then
-            echo "Release $tag already exists."
+            echo "GitHub release $tag already exists."
             exit 0
           fi
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "$tag" -m "$tag" "$GITHUB_SHA"
-          git push origin "$tag"
+
+          if git rev-parse "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "Git tag $tag already exists; skipping tag create/push."
+            tag_commit=$(git rev-parse "$tag^{commit}")
+            if [ "$tag_commit" != "$GITHUB_SHA" ]; then
+              echo "::warning::Tag $tag is at $tag_commit, but this push is $GITHUB_SHA"
+            fi
+          else
+            git tag -a "$tag" -m "$tag" "$GITHUB_SHA"
+            git push origin "$tag"
+          fi
 
           gh release create "$tag" \
-            --target "$GITHUB_SHA" \
+            --target "$tag" \
             --title "$tag" \
             --generate-notes
 
