@@ -185,6 +185,25 @@ The second question can only be answered *after* the reboot, by the new image, i
 
 The deadline armed by `ota_api_trial_begin()` is **not** the test. It is what happens when nobody answers at all, which is what saves a device that booted an image too broken to reach its own self-test.
 
+Before the automatic rollback runs, the component can call into the application once:
+
+```c
+static bool on_trial_expiry(const ota_api_trial_expiry_info_t *info, void *ctx)
+{
+  (void)ctx;
+  /* Persist product NVS, classify the expiry, etc. Keep this short (no HTTP). */
+  bool count_generic_lib_counter = /* your policy, e.g. no server contact during trial */;
+  return count_generic_lib_counter;
+}
+
+(void)ota_api_set_trial_expiry_cb(on_trial_expiry, NULL);
+ota_api_trial_begin(0);
+```
+
+A `true` return value increments the library’s own NVS rollback counter for `info->version`
+(read back with `ota_api_get_trial_expiry_rollback_count()`). The library does not define
+“no network” vs other failure modes — that belongs in the application.
+
 [examples/rollback](examples/rollback) shows a self-test that decides at boot; [examples/advanced](examples/advanced) shows an operator answering from a console.
 
 ### Following an update from elsewhere
