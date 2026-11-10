@@ -14,14 +14,22 @@
  */
 
 #include <inttypes.h>
+#include <string.h>
 
+#include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
 #include "esp_timer.h"
+#include "nvs.h"
 #include "ota-api.h"
 
 static const char *TAG = "ota-api";
+
+#define TRIAL_VER_MAX 32
+#define NVS_NS        "ota_api"
+#define KEY_RB_N      "trial_rb_n"
+#define KEY_RB_VER    "trial_rb_ver"
 
 /* Created by the first ota_api_trial_begin() and then kept for the life of the
  * boot. Stopping it is enough; deleting it would open a use-after-free against
@@ -29,6 +37,51 @@ static const char *TAG = "ota-api";
  * next to that risk.
  */
 static esp_timer_handle_t s_trial_timer;
+static ota_api_trial_expiry_cb_t s_expiry_cb;
+static void *s_expiry_ctx;
+static uint32_t s_trial_timeout_s;
+
+static esp_err_t _rb_nvs_increment_expiry(const char *version)
+{
+  if (version == NULL || version[0] == '\0')
+    return ESP_ERR_INVALID_ARG;
+
+  nvs_handle_t handle;
+  esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &handle);
+  if (err != ESP_OK)
+    return err;
+
+  char stored[TRIAL_VER_MAX] = "";
+  size_t len = sizeof(stored);
+  uint8_t count = 0;
+
+  if (nvs_get_str(handle, KEY_RB_VER, stored, &len) == ESP_OK && strcmp(stored, version) == 0)
+    (void)nvs_get_u8(handle, KEY_RB_N, &count);
+  else
+    count = 0;
+
+  if (count < 255)
+    count++;
+
+  err = nvs_set_str(handle, KEY_RB_VER, version);
+  if (err == ESP_OK)
+    err = nvs_set_u8(handle, KEY_RB_N, count);
+  if (err == ESP_OK)
+    err = nvs_commit(handle);
+  nvs_close(handle);
+  return err;
+}
+
+static void _rb_nvs_clear(void)
+{
+  nvs_handle_t handle;
+  if (nvs_open(NVS_NS, NVS_READWRITE, &handle) != ESP_OK)
+    return;
+  (void)nvs_erase_key(handle, KEY_RB_N);
+  (void)nvs_erase_key(handle, KEY_RB_VER);
+  (void)nvs_commit(handle);
+  nvs_close(handle);
+}
 
 /**
  * @brief Fires when nobody vouched for the image in time
@@ -50,6 +103,26 @@ static void trial_timeout(void *arg)
    */
   if (!ota_api_is_on_trial())
     return;
+
+  const esp_app_desc_t *app = esp_app_get_description();
+  const char *ver = (app != NULL && app->version[0] != '\0') ? app->version : "?";
+
+  bool count_expiry = false;
+  if (s_expiry_cb != NULL)
+  {
+    ota_api_trial_expiry_info_t info = {
+      .version = ver,
+      .timeout_s = s_trial_timeout_s != 0 ? s_trial_timeout_s : CONFIG_OTA_API_TRIAL_TIMEOUT_S,
+    };
+    count_expiry = s_expiry_cb(&info, s_expiry_ctx);
+  }
+
+  if (count_expiry)
+  {
+    esp_err_t nvs_err = _rb_nvs_increment_expiry(ver);
+    if (nvs_err != ESP_OK)
+      ESP_LOGW(TAG, "trial expiry counter NVS increment failed: %s", esp_err_to_name(nvs_err));
+  }
 
   ESP_LOGE(TAG, "Trial window expired with no confirmation, rolling back");
   esp_ota_mark_app_invalid_rollback_and_reboot();  // Does not return
@@ -104,6 +177,7 @@ esp_err_t ota_api_trial_begin(uint32_t timeout_s)
    * when a window is already counting down, which is exactly what a second
    * ota_api_trial_begin() means.
    */
+  s_trial_timeout_s = timeout_s;
   esp_err_t err = esp_timer_start_once(s_trial_timer, (uint64_t)timeout_s * 1000000);
   if (err != ESP_OK)
     return err;
@@ -124,6 +198,8 @@ esp_err_t ota_api_trial_confirm(void)
    */
   if (s_trial_timer)
     (void)esp_timer_stop(s_trial_timer);
+
+  _rb_nvs_clear();
 
   esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
   if (err != ESP_OK)
@@ -151,4 +227,37 @@ esp_err_t ota_api_trial_reject(void)
   // Reached only when there was no valid image to return to
   ESP_LOGE(TAG, "Rollback refused (%s), still running the current image", esp_err_to_name(err));
   return err;
+}
+
+esp_err_t ota_api_set_trial_expiry_cb(ota_api_trial_expiry_cb_t fn, void *ctx)
+{
+  if (fn == NULL)
+    return ESP_ERR_INVALID_ARG;
+  s_expiry_cb = fn;
+  s_expiry_ctx = ctx;
+  return ESP_OK;
+}
+
+esp_err_t ota_api_get_trial_expiry_rollback_count(const char *ver, uint8_t *out_n)
+{
+  if (out_n == NULL)
+    return ESP_ERR_INVALID_ARG;
+  *out_n = 0;
+  if (ver == NULL || ver[0] == '\0')
+    return ESP_OK;
+
+  nvs_handle_t handle;
+  if (nvs_open(NVS_NS, NVS_READONLY, &handle) != ESP_OK)
+    return ESP_OK;
+
+  char stored[TRIAL_VER_MAX] = "";
+  size_t len = sizeof(stored);
+  uint8_t count = 0;
+  esp_err_t err = nvs_get_str(handle, KEY_RB_VER, stored, &len);
+  if (err == ESP_OK && strcmp(stored, ver) == 0)
+    (void)nvs_get_u8(handle, KEY_RB_N, &count);
+  nvs_close(handle);
+
+  *out_n = count;
+  return ESP_OK;
 }
