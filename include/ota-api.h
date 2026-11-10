@@ -53,6 +53,9 @@ typedef enum
 /*                           TYPES AND STRUCTURES                             */
 /* ========================================================================== */
 
+/** Length in bytes of ota_api_config_t::sha256 */
+#define OTA_API_SHA256_LEN 32
+
 /**
  * @brief Download progress snapshot
  */
@@ -116,6 +119,9 @@ typedef struct
                                       CONFIG_ESP_HTTPS_OTA_ENABLE_PARTIAL_DOWNLOAD */
   size_t max_http_request_size;  /**< Bytes per request when partial_download is
                                       set. 0 = esp_https_ota chooses */
+  const uint8_t *sha256;         /**< OTA_API_SHA256_LEN bytes the downloaded
+                                      file must hash to, checked before it is
+                                      made bootable. NULL = no check */
 } ota_api_config_t;
 
 /**
@@ -134,6 +140,7 @@ typedef struct
     .progress_interval_ms = 0,       \
     .partial_download = false,       \
     .max_http_request_size = 0,      \
+    .sha256 = NULL,                  \
   }
 
 /* ========================================================================== */
@@ -155,6 +162,8 @@ typedef struct
  *         - ESP_ERR_INVALID_STATE: another update is already running
  *         - ESP_ERR_OTA_VALIDATE_FAILED: event_cb refused the image, or it is
  *           incomplete or invalid
+ *         - ESP_ERR_INVALID_CRC: the downloaded file does not hash to
+ *           config->sha256; nothing was made bootable
  *         - ESP_ERR_NOT_FINISHED: stopped by ota_api_abort()
  *         - any other value event_cb returned, or an error from esp_https_ota
  */
@@ -262,6 +271,38 @@ esp_err_t ota_api_trial_confirm(void);
  *         - any other error from esp_ota_mark_app_invalid_rollback_and_reboot()
  */
 esp_err_t ota_api_trial_reject(void);
+
+/** Snapshot passed to the trial expiry callback (valid only for the duration of the call). */
+typedef struct
+{
+  const char *version; /**< Running image version (esp_app_desc_t::version). */
+  uint32_t timeout_s;  /**< Trial window that expired (seconds). */
+} ota_api_trial_expiry_info_t;
+
+/**
+ * @brief Called synchronously when the trial timer fires, before rollback/reboot.
+ *
+ * The application decides rollback classification. Return true when the library
+ * should increment its generic trial-expiry rollback counter for @p info->version.
+ * Must be quick (NVS only); do not block on network I/O.
+ */
+typedef bool (*ota_api_trial_expiry_cb_t)(const ota_api_trial_expiry_info_t *info, void *ctx);
+
+/**
+ * @brief Register a handler for trial expiry (one global callback).
+ *
+ * @return ESP_OK, or ESP_ERR_INVALID_ARG if @p fn is NULL
+ */
+esp_err_t ota_api_set_trial_expiry_cb(ota_api_trial_expiry_cb_t fn, void *ctx);
+
+/**
+ * @brief Trial-expiry rollback count stored by the library (when the callback returned true).
+ *
+ * @param ver    Version string to match (same rules as esp_app_desc_t::version).
+ * @param out_n  Receives count 0..255 when @p ver matches stored version; else 0.
+ * @return ESP_OK on success
+ */
+esp_err_t ota_api_get_trial_expiry_rollback_count(const char *ver, uint8_t *out_n);
 
 #ifdef __cplusplus
 }

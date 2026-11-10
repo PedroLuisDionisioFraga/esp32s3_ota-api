@@ -18,6 +18,7 @@ OTA API is a component for ESP-IDF that simplifies HTTPS over-the-air firmware u
 - Cancel an update in flight with `ota_api_abort()`, leaving the running firmware untouched.
 - Automatic rollback for an image nobody vouches for: `ota_api_trial_begin()` arms a deadline, `ota_api_trial_confirm()` keeps the firmware, `ota_api_trial_reject()` goes back. A device that boots a broken update recovers on its own.
 - Optional ranged downloads (`partial_download`) for links that drop long transfers.
+- Optional integrity check (`sha256`): the downloaded file must hash to the SHA-256 you give, or the update stops before the image is made bootable.
 - Server validation via the trusted root certificate bundle (default) or a custom PEM certificate — or none at all on a lab build (`CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY`). A plain `http://` URL needs no certificate either, only `CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP` — see below.
 - Optional binding of the OTA connection to a specific network interface (Wi-Fi STA, Ethernet, Thread).
 - Task stack size and priority configurable per call or via `menuconfig` (`OTA API Configuration`).
@@ -96,6 +97,18 @@ ota_config.event_cb = on_ota_event;
 ota_config.progress_interval_ms = 250;  // rate limit, 0 = every chunk
 ```
 
+### Checking the image's SHA-256
+
+When the server publishes the image's SHA-256 (the `sha256sum` of the `.bin`), hand it over and the component checks the download against it:
+
+```c
+static uint8_t expected[OTA_API_SHA256_LEN];  // must outlive the update, like url
+// ... fill `expected` from the 64 hex characters the server sent ...
+ota_config.sha256 = expected;
+```
+
+The check runs once the whole file is in the staging partition and before `esp_https_ota_finish()`: the component reads the partition back and hashes it, so it costs one flash read of the image. On a mismatch the update stops with `ESP_ERR_INVALID_CRC`, the staged image is discarded, and nothing is made bootable. It complements the image's own validation instead of replacing it: `esp_https_ota_finish()` still checks the header, the appended digest and, with Secure Boot, the signature.
+
 ### Downloading over plain HTTP
 
 For a local server or a closed network, an `http://` URL works with no certificate and no bundle — set `CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y` and leave `cert_pem` at `NULL`:
@@ -171,6 +184,25 @@ There is no self-test callback, and looking for one means two questions are bein
 The second question can only be answered *after* the reboot, by the new image, in a process where nothing that ran the update still exists — there is nothing left for the component to call back into. And what "works" means belongs to the product: a server handshake, a sensor answering, a GPIO jumper. So the application calls the component, not the other way round.
 
 The deadline armed by `ota_api_trial_begin()` is **not** the test. It is what happens when nobody answers at all, which is what saves a device that booted an image too broken to reach its own self-test.
+
+Before the automatic rollback runs, the component can call into the application once:
+
+```c
+static bool on_trial_expiry(const ota_api_trial_expiry_info_t *info, void *ctx)
+{
+  (void)ctx;
+  /* Persist product NVS, classify the expiry, etc. Keep this short (no HTTP). */
+  bool count_generic_lib_counter = /* your policy, e.g. no server contact during trial */;
+  return count_generic_lib_counter;
+}
+
+(void)ota_api_set_trial_expiry_cb(on_trial_expiry, NULL);
+ota_api_trial_begin(0);
+```
+
+A `true` return value increments the library’s own NVS rollback counter for `info->version`
+(read back with `ota_api_get_trial_expiry_rollback_count()`). The library does not define
+“no network” vs other failure modes — that belongs in the application.
 
 [examples/rollback](examples/rollback) shows a self-test that decides at boot; [examples/advanced](examples/advanced) shows an operator answering from a console.
 

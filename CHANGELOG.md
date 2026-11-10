@@ -7,8 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-11-10
+
 ### Added
 
+- `ota_api_set_trial_expiry_cb()`: synchronous hook immediately before
+  `esp_ota_mark_app_invalid_rollback_and_reboot()` when the trial timer expires.
+  The callback returns `true` to increment a generic NVS counter
+  (`ota_api_get_trial_expiry_rollback_count()`); product-specific rollback
+  policy stays in the application.
+- `ota_api_config_t::sha256`: the SHA-256 (`OTA_API_SHA256_LEN` bytes) the downloaded file
+  must hash to. Checked once the whole image is in the staging partition and before
+  `esp_https_ota_finish()`, by reading the partition back, so a mismatch stops the update
+  with `ESP_ERR_INVALID_CRC` and nothing is made bootable. `NULL`, the default, skips the
+  check, so existing callers are unchanged.
 - `examples/common/ota_server.py --http` serves the firmware over plain HTTP, with no
   certificate read or generated. The device must be built with
   `CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y` to accept the `http://` URL it prints.

@@ -101,9 +101,14 @@ static esp_err_t download_image(esp_https_ota_handle_t handle, const ota_api_con
 
   /* Forced so a 100% line always lands, and it doubles as the last chance to
    * refuse: everything is downloaded, but esp_https_ota_finish() has not run
-   * yet, so nothing is bootable and aborting still discards it cleanly.
+   * yet, so nothing is bootable and aborting still discards it cleanly. The
+   * SHA-256 check sits at the same point for the same reason.
    */
-  return ota_api_report_progress(handle, config, total_bytes, &last_report_us, true);
+  err = ota_api_report_progress(handle, config, total_bytes, &last_report_us, true);
+  if (err != ESP_OK || !config->sha256)
+    return err;
+
+  return ota_api_verify_sha256(handle, config->sha256);
 }
 
 static esp_err_t run_update(const ota_api_config_t *config)
