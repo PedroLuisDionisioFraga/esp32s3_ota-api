@@ -122,6 +122,18 @@ typedef struct
   const uint8_t *sha256;         /**< OTA_API_SHA256_LEN bytes the downloaded
                                       file must hash to, checked before it is
                                       made bootable. NULL = no check */
+  const char *http_username;     /**< HTTP Basic user, sent with the first
+                                      request (no 401 round trip). NULL = no
+                                      authentication. Needs
+                                      CONFIG_ESP_HTTP_CLIENT_ENABLE_BASIC_AUTH */
+  const char *http_password;     /**< HTTP Basic password; used only with
+                                      http_username */
+  esp_err_t (*crt_bundle_attach)(void *conf); /**< Trust-store hook used when
+                                      cert_pem is NULL, typically
+                                      esp_crt_bundle_attach. NULL = the
+                                      default described at cert_pem */
+  uint32_t timeout_ms;           /**< Connect and per-read timeout. 0 =
+                                      esp_http_client default */
 } ota_api_config_t;
 
 /**
@@ -141,6 +153,10 @@ typedef struct
     .partial_download = false,       \
     .max_http_request_size = 0,      \
     .sha256 = NULL,                  \
+    .http_username = NULL,           \
+    .http_password = NULL,           \
+    .crt_bundle_attach = NULL,       \
+    .timeout_ms = 0,                 \
   }
 
 /* ========================================================================== */

@@ -131,6 +131,22 @@ esp_err_t ota_api_build_http_config(const ota_api_config_t *config, esp_http_cli
   http_config->event_handler = http_event_handler;
   http_config->keep_alive_enable = true;
   http_config->skip_cert_common_name_check = config->skip_common_name_check;
+  if (config->timeout_ms)
+    http_config->timeout_ms = (int)config->timeout_ms;
+
+  if (config->http_username)
+  {
+#ifdef CONFIG_ESP_HTTP_CLIENT_ENABLE_BASIC_AUTH
+    http_config->username = config->http_username;
+    http_config->password = config->http_password ? config->http_password : "";
+    // Preemptive: the header goes with the first request, and a 401 is final
+    http_config->auth_type = HTTP_AUTH_TYPE_BASIC;
+    http_config->max_authorization_retries = -1;
+#else
+    ESP_LOGE(TAG, "http_username given but CONFIG_ESP_HTTP_CLIENT_ENABLE_BASIC_AUTH is disabled");
+    return ESP_ERR_INVALID_ARG;
+#endif
+  }
 
   if (is_plain_http(config->url))
   {
@@ -149,6 +165,11 @@ esp_err_t ota_api_build_http_config(const ota_api_config_t *config, esp_http_cli
   else if (config->cert_pem)
   {
     http_config->cert_pem = config->cert_pem;
+  }
+  else if (config->crt_bundle_attach)
+  {
+    // An explicit trust store wins over CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY
+    http_config->crt_bundle_attach = config->crt_bundle_attach;
   }
   else
   {
