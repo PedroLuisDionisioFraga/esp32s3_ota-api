@@ -35,7 +35,7 @@ esp_err_t ota_api_dispatch_event(const ota_api_config_t *config, ota_api_event_i
   return err;
 }
 
-esp_err_t ota_api_report_progress(esp_https_ota_handle_t handle, const ota_api_config_t *config, int total_bytes,
+esp_err_t ota_api_report_progress(const ota_api_config_t *config, int read_bytes, int total_bytes,
                                   int64_t *last_report_us, bool force)
 {
   if (!force && config->progress_interval_ms)
@@ -48,7 +48,6 @@ esp_err_t ota_api_report_progress(esp_https_ota_handle_t handle, const ota_api_c
     *last_report_us = now_us;
   }
 
-  int read_bytes = esp_https_ota_get_image_len_read(handle);
   // Nothing to report is not a reason to stop the download
   if (read_bytes < 0)
     return ESP_OK;

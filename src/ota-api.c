@@ -81,7 +81,8 @@ static esp_err_t download_image(esp_https_ota_handle_t handle, const ota_api_con
       return ESP_ERR_NOT_FINISHED;
     }
 
-    err = ota_api_report_progress(handle, config, total_bytes, &last_report_us, false);
+    err = ota_api_report_progress(config, esp_https_ota_get_image_len_read(handle), total_bytes, &last_report_us,
+                                  false);
     if (err != ESP_OK)
       return err;
   }
@@ -104,7 +105,7 @@ static esp_err_t download_image(esp_https_ota_handle_t handle, const ota_api_con
    * yet, so nothing is bootable and aborting still discards it cleanly. The
    * SHA-256 check sits at the same point for the same reason.
    */
-  err = ota_api_report_progress(handle, config, total_bytes, &last_report_us, true);
+  err = ota_api_report_progress(config, esp_https_ota_get_image_len_read(handle), total_bytes, &last_report_us, true);
   if (err != ESP_OK || !config->sha256)
     return err;
 
@@ -197,7 +198,7 @@ esp_err_t ota_api_update(const ota_api_config_t *config)
     return ESP_ERR_INVALID_STATE;
   }
 
-  esp_err_t err = run_update(config);
+  esp_err_t err = config->disable_auto_redirect ? ota_api_run_direct(config) : run_update(config);
 
   ota_api_release_update_slot();
 

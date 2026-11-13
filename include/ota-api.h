@@ -146,8 +146,17 @@ typedef struct
                                       cert_pem is NULL, typically
                                       esp_crt_bundle_attach. NULL = the
                                       default described at cert_pem */
+  bool disable_auto_redirect;    /**< Treat any 3xx as a failure and never
+                                      contact the Location target. The image
+                                      then travels in exactly one GET (no
+                                      partial_download, no retry) */
   uint32_t timeout_ms;           /**< Connect and per-read timeout. 0 =
                                       esp_http_client default */
+  uint32_t connect_timeout_ms;   /**< Connect timeout (TCP and TLS handshake)
+                                      of the single-GET download
+                                      (disable_auto_redirect) when it has to
+                                      differ from timeout_ms, which the reads
+                                      then use. 0 = timeout_ms for both */
   ota_api_pre_activate_cb_t pre_activate_cb; /**< Called right before the
                                       image is made bootable. NULL = none */
 } ota_api_config_t;
@@ -172,7 +181,9 @@ typedef struct
     .http_username = NULL,           \
     .http_password = NULL,           \
     .crt_bundle_attach = NULL,       \
+    .disable_auto_redirect = false,  \
     .timeout_ms = 0,                 \
+    .connect_timeout_ms = 0,         \
     .pre_activate_cb = NULL,         \
   }
 
@@ -199,6 +210,17 @@ typedef struct
  *           config->sha256; nothing was made bootable
  *         - ESP_ERR_NOT_FINISHED: stopped by ota_api_abort()
  *         - any other value event_cb returned, or an error from esp_https_ota
+ *
+ *         With disable_auto_redirect (single GET) a failed transfer and a bad
+ *         image never share a code:
+ *         - ESP_FAIL: HTTP status other than 200 (any 3xx included), or a read
+ *           that failed mid-transfer
+ *         - ESP_ERR_INVALID_RESPONSE: the body ended before its Content-Length,
+ *           or went past it
+ *         - ESP_ERR_INVALID_SIZE: the image is larger than the OTA partition;
+ *           refused before anything is erased
+ *         - ESP_ERR_OTA_VALIDATE_FAILED: only an image that is not an
+ *           application, fails its validation, or that event_cb refused with it
  */
 esp_err_t ota_api_update(const ota_api_config_t *config);
 

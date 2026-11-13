@@ -74,12 +74,28 @@ esp_err_t ota_api_dispatch_event(const ota_api_config_t *config, ota_api_event_i
 /**
  * @brief Report progress through the event loop and the callback
  *
+ * @param read_bytes Image bytes received so far (negative = unknown, nothing reported)
  * @param last_report_us Timestamp of the previous report, updated in place
  * @param force Report regardless of progress_interval_ms
  * @return ESP_OK to keep downloading, or event_cb's verdict to stop
  */
-esp_err_t ota_api_report_progress(esp_https_ota_handle_t handle, const ota_api_config_t *config, int total_bytes,
+esp_err_t ota_api_report_progress(const ota_api_config_t *config, int read_bytes, int total_bytes,
                                   int64_t *last_report_us, bool force);
+
+/* ========================================================================== */
+/*               ota-api-direct.c: SINGLE-GET DOWNLOAD, NO REDIRECTS          */
+/* ========================================================================== */
+
+/**
+ * @brief Download, verify, write and activate the image over one GET request
+ *
+ * Used when ota_api_config_t::disable_auto_redirect is set. esp_https_ota
+ * follows every 3xx on its own (it calls esp_http_client_set_redirection()
+ * whatever disable_auto_redirect says), so this path drives esp_http_client
+ * and esp_ota_* directly: a 3xx ends the update before anything is sent to the
+ * Location target.
+ */
+esp_err_t ota_api_run_direct(const ota_api_config_t *config);
 
 /* ========================================================================== */
 /*                     ota-api-verify.c: INTEGRITY CHECK                      */

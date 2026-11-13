@@ -131,6 +131,7 @@ esp_err_t ota_api_build_http_config(const ota_api_config_t *config, esp_http_cli
   http_config->event_handler = http_event_handler;
   http_config->keep_alive_enable = true;
   http_config->skip_cert_common_name_check = config->skip_common_name_check;
+  http_config->disable_auto_redirect = config->disable_auto_redirect;
   if (config->timeout_ms)
     http_config->timeout_ms = (int)config->timeout_ms;
 
