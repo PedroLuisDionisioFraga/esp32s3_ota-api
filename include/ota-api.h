@@ -86,6 +86,20 @@ typedef struct
 typedef esp_err_t (*ota_api_event_cb_t)(ota_api_event_id_t event_id, const void *data, void *user_ctx);
 
 /**
+ * @brief Last word before the downloaded image is made bootable
+ *
+ * Runs on the update task once the image is complete, verified (SHA-256 when
+ * given) and validated, and before the boot partition is switched. Persist
+ * whatever must survive the reboot here ("update pending"): a failure before
+ * this point leaves nothing bootable, so nothing has to be undone.
+ *
+ * @param user_ctx ota_api_config_t::user_ctx as given
+ * @return ESP_OK to activate; anything else discards the image and becomes the
+ *         update's result
+ */
+typedef esp_err_t (*ota_api_pre_activate_cb_t)(void *user_ctx);
+
+/**
  * @brief OTA update configuration
  *
  * Pointer fields are not copied and must stay valid until the update finishes
@@ -134,6 +148,8 @@ typedef struct
                                       default described at cert_pem */
   uint32_t timeout_ms;           /**< Connect and per-read timeout. 0 =
                                       esp_http_client default */
+  ota_api_pre_activate_cb_t pre_activate_cb; /**< Called right before the
+                                      image is made bootable. NULL = none */
 } ota_api_config_t;
 
 /**
@@ -157,6 +173,7 @@ typedef struct
     .http_password = NULL,           \
     .crt_bundle_attach = NULL,       \
     .timeout_ms = 0,                 \
+    .pre_activate_cb = NULL,         \
   }
 
 /* ========================================================================== */

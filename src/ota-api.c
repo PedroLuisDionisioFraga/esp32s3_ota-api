@@ -157,6 +157,23 @@ static esp_err_t run_update(const ota_api_config_t *config)
     return err;
   }
 
+  /* esp_https_ota_finish() validates and activates in one call, so this is the
+   * latest point before the image becomes bootable. A validation failure inside
+   * finish() after pre_activate_cb ran leaves the caller's "pending" state with
+   * the old image still active, which the next boot can tell apart (the slot
+   * never became bootable).
+   */
+  if (config->pre_activate_cb)
+  {
+    err = config->pre_activate_cb(config->user_ctx);
+    if (err != ESP_OK)
+    {
+      ESP_LOGE(TAG, "pre_activate_cb refused activation (%s)", esp_err_to_name(err));
+      esp_https_ota_abort(handle);
+      return err;
+    }
+  }
+
   err = esp_https_ota_finish(handle);
   if (err != ESP_OK)
   {
