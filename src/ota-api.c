@@ -81,7 +81,8 @@ static esp_err_t download_image(esp_https_ota_handle_t handle, const ota_api_con
       return ESP_ERR_NOT_FINISHED;
     }
 
-    err = ota_api_report_progress(handle, config, total_bytes, &last_report_us, false);
+    err =
+      ota_api_report_progress(config, esp_https_ota_get_image_len_read(handle), total_bytes, &last_report_us, false);
     if (err != ESP_OK)
       return err;
   }
@@ -104,7 +105,7 @@ static esp_err_t download_image(esp_https_ota_handle_t handle, const ota_api_con
    * yet, so nothing is bootable and aborting still discards it cleanly. The
    * SHA-256 check sits at the same point for the same reason.
    */
-  err = ota_api_report_progress(handle, config, total_bytes, &last_report_us, true);
+  err = ota_api_report_progress(config, esp_https_ota_get_image_len_read(handle), total_bytes, &last_report_us, true);
   if (err != ESP_OK || !config->sha256)
     return err;
 
@@ -157,6 +158,23 @@ static esp_err_t run_update(const ota_api_config_t *config)
     return err;
   }
 
+  /* esp_https_ota_finish() validates and activates in one call, so this is the
+   * latest point before the image becomes bootable. A validation failure inside
+   * finish() after pre_activate_cb ran leaves the caller's "pending" state with
+   * the old image still active, which the next boot can tell apart (the slot
+   * never became bootable).
+   */
+  if (config->pre_activate_cb)
+  {
+    err = config->pre_activate_cb(config->user_ctx);
+    if (err != ESP_OK)
+    {
+      ESP_LOGE(TAG, "pre_activate_cb refused activation (%s)", esp_err_to_name(err));
+      esp_https_ota_abort(handle);
+      return err;
+    }
+  }
+
   err = esp_https_ota_finish(handle);
   if (err != ESP_OK)
   {
@@ -180,7 +198,7 @@ esp_err_t ota_api_update(const ota_api_config_t *config)
     return ESP_ERR_INVALID_STATE;
   }
 
-  esp_err_t err = run_update(config);
+  esp_err_t err = config->disable_auto_redirect ? ota_api_run_direct(config) : run_update(config);
 
   ota_api_release_update_slot();
 

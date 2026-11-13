@@ -86,6 +86,20 @@ typedef struct
 typedef esp_err_t (*ota_api_event_cb_t)(ota_api_event_id_t event_id, const void *data, void *user_ctx);
 
 /**
+ * @brief Last word before the downloaded image is made bootable
+ *
+ * Runs on the update task once the image is complete, verified (SHA-256 when
+ * given) and validated, and before the boot partition is switched. Persist
+ * whatever must survive the reboot here ("update pending"): a failure before
+ * this point leaves nothing bootable, so nothing has to be undone.
+ *
+ * @param user_ctx ota_api_config_t::user_ctx as given
+ * @return ESP_OK to activate; anything else discards the image and becomes the
+ *         update's result
+ */
+typedef esp_err_t (*ota_api_pre_activate_cb_t)(void *user_ctx);
+
+/**
  * @brief OTA update configuration
  *
  * Pointer fields are not copied and must stay valid until the update finishes
@@ -93,35 +107,58 @@ typedef esp_err_t (*ota_api_event_cb_t)(ota_api_event_id_t event_id, const void 
  */
 typedef struct
 {
-  const char *url;               /**< Firmware image URL (required) */
-  const char *cert_pem;          /**< Server certificate, PEM. NULL = trusted
-                                      root bundle (needs
-                                      MBEDTLS_CERTIFICATE_BUNDLE), or no server
-                                      verification when
-                                      CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY is
-                                      set. Ignored for an http:// URL */
-  bool skip_common_name_check;   /**< Skip server certificate CN validation */
-  esp_netif_t *bind_netif;       /**< Bind the connection to this interface.
-                                      NULL = any */
-  uint32_t task_stack_size;      /**< ota_api_start_task only. 0 =
-                                      CONFIG_OTA_API_TASK_STACK_SIZE */
-  UBaseType_t task_priority;     /**< ota_api_start_task only. 0 =
-                                      CONFIG_OTA_API_TASK_PRIORITY */
-  ota_api_event_cb_t event_cb;   /**< Per-event callback, and the only way to
-                                      stop an update from inside it.
-                                      NULL = report nothing */
-  void *user_ctx;                /**< Passed unchanged to event_cb */
-  uint32_t progress_interval_ms; /**< Minimum gap between progress reports.
-                                      0 = every chunk */
-  bool partial_download;         /**< Fetch the image over several ranged
-                                      requests, surviving links that drop long
-                                      transfers. Needs
-                                      CONFIG_ESP_HTTPS_OTA_ENABLE_PARTIAL_DOWNLOAD */
-  size_t max_http_request_size;  /**< Bytes per request when partial_download is
-                                      set. 0 = esp_https_ota chooses */
-  const uint8_t *sha256;         /**< OTA_API_SHA256_LEN bytes the downloaded
-                                      file must hash to, checked before it is
-                                      made bootable. NULL = no check */
+  const char *url;                            /**< Firmware image URL (required) */
+  const char *cert_pem;                       /**< Server certificate, PEM. NULL = trusted
+                                                   root bundle (needs
+                                                   MBEDTLS_CERTIFICATE_BUNDLE), or no server
+                                                   verification when
+                                                   CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY is
+                                                   set. Ignored for an http:// URL */
+  bool skip_common_name_check;                /**< Skip server certificate CN validation */
+  esp_netif_t *bind_netif;                    /**< Bind the connection to this interface.
+                                                   NULL = any */
+  uint32_t task_stack_size;                   /**< ota_api_start_task only. 0 =
+                                                   CONFIG_OTA_API_TASK_STACK_SIZE */
+  UBaseType_t task_priority;                  /**< ota_api_start_task only. 0 =
+                                                   CONFIG_OTA_API_TASK_PRIORITY */
+  ota_api_event_cb_t event_cb;                /**< Per-event callback, and the only way to
+                                                   stop an update from inside it.
+                                                   NULL = report nothing */
+  void *user_ctx;                             /**< Passed unchanged to event_cb */
+  uint32_t progress_interval_ms;              /**< Minimum gap between progress reports.
+                                                   0 = every chunk */
+  bool partial_download;                      /**< Fetch the image over several ranged
+                                                   requests, surviving links that drop long
+                                                   transfers. Needs
+                                                   CONFIG_ESP_HTTPS_OTA_ENABLE_PARTIAL_DOWNLOAD */
+  size_t max_http_request_size;               /**< Bytes per request when partial_download is
+                                                   set. 0 = esp_https_ota chooses */
+  const uint8_t *sha256;                      /**< OTA_API_SHA256_LEN bytes the downloaded
+                                                   file must hash to, checked before it is
+                                                   made bootable. NULL = no check */
+  const char *http_username;                  /**< HTTP Basic user, sent with the first
+                                                   request (no 401 round trip). NULL = no
+                                                   authentication. Needs
+                                                   CONFIG_ESP_HTTP_CLIENT_ENABLE_BASIC_AUTH */
+  const char *http_password;                  /**< HTTP Basic password; used only with
+                                                   http_username */
+  esp_err_t (*crt_bundle_attach)(void *conf); /**< Trust-store hook used when
+                                      cert_pem is NULL, typically
+                                      esp_crt_bundle_attach. NULL = the
+                                      default described at cert_pem */
+  bool disable_auto_redirect;                 /**< Treat any 3xx as a failure and never
+                                                   contact the Location target. The image
+                                                   then travels in exactly one GET (no
+                                                   partial_download, no retry) */
+  uint32_t timeout_ms;                        /**< Connect and per-read timeout. 0 =
+                                                   esp_http_client default */
+  uint32_t connect_timeout_ms;                /**< Connect timeout (TCP and TLS handshake)
+                                                   of the single-GET download
+                                                   (disable_auto_redirect) when it has to
+                                                   differ from timeout_ms, which the reads
+                                                   then use. 0 = timeout_ms for both */
+  ota_api_pre_activate_cb_t pre_activate_cb;  /**< Called right before the
+                                       image is made bootable. NULL = none */
 } ota_api_config_t;
 
 /**
@@ -141,6 +178,13 @@ typedef struct
     .partial_download = false,       \
     .max_http_request_size = 0,      \
     .sha256 = NULL,                  \
+    .http_username = NULL,           \
+    .http_password = NULL,           \
+    .crt_bundle_attach = NULL,       \
+    .disable_auto_redirect = false,  \
+    .timeout_ms = 0,                 \
+    .connect_timeout_ms = 0,         \
+    .pre_activate_cb = NULL,         \
   }
 
 /* ========================================================================== */
@@ -166,6 +210,17 @@ typedef struct
  *           config->sha256; nothing was made bootable
  *         - ESP_ERR_NOT_FINISHED: stopped by ota_api_abort()
  *         - any other value event_cb returned, or an error from esp_https_ota
+ *
+ *         With disable_auto_redirect (single GET) a failed transfer and a bad
+ *         image never share a code:
+ *         - ESP_FAIL: HTTP status other than 200 (any 3xx included), or a read
+ *           that failed mid-transfer
+ *         - ESP_ERR_INVALID_RESPONSE: the body ended before its Content-Length,
+ *           or went past it
+ *         - ESP_ERR_INVALID_SIZE: the image is larger than the OTA partition;
+ *           refused before anything is erased
+ *         - ESP_ERR_OTA_VALIDATE_FAILED: only an image that is not an
+ *           application, fails its validation, or that event_cb refused with it
  */
 esp_err_t ota_api_update(const ota_api_config_t *config);
 

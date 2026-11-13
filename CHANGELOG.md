@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `ota_api_config_t::http_username` and `http_password`: HTTP Basic credentials, sent with the
+  first request so there is no 401 round trip (a 401 is final). Needs
+  `CONFIG_ESP_HTTP_CLIENT_ENABLE_BASIC_AUTH`; without it the update is refused with
+  `ESP_ERR_INVALID_ARG`.
+- `ota_api_config_t::crt_bundle_attach`: trust-store hook used when `cert_pem` is `NULL`,
+  typically `esp_crt_bundle_attach`. An explicit hook wins over
+  `CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY`, so the server is verified even on a lab build.
+- `ota_api_config_t::disable_auto_redirect`: any 3xx is a failure and the `Location` target is
+  never contacted. `esp_https_ota` follows redirects by itself, so this option switches to a
+  download that drives `esp_http_client` and `esp_ota_*` directly: one GET, no
+  `partial_download`, no retry, and the image size checked against the partition before
+  anything is erased. On this path a failed transfer and a bad image never share an error
+  code: `ESP_FAIL` for a status other than 200 or a read that fails,
+  `ESP_ERR_INVALID_RESPONSE` for a body shorter or longer than its `Content-Length`,
+  `ESP_ERR_INVALID_SIZE` for an image larger than the partition, and
+  `ESP_ERR_OTA_VALIDATE_FAILED` only for an image that is refused or invalid.
+- `ota_api_config_t::timeout_ms`: connect and per-read timeout. `connect_timeout_ms` gives the
+  connection (TCP and TLS handshake) of the single-GET download its own, shorter limit.
+- `ota_api_config_t::pre_activate_cb`: called right before the image is made bootable, so the
+  application can persist an "update pending" record that survives the reboot. Returning
+  anything but `ESP_OK` discards the image. On the default path it runs before
+  `esp_https_ota_finish()`, which validates and activates in one call; on the single-GET
+  path it runs after the validation.
+
 ## [0.3.7] - 2026-11-10
 
 ### Added
