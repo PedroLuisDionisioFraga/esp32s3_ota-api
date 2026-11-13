@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-11-13
+
 ### Added
 
 - `ota_api_config_t::http_username` and `http_password`: HTTP Basic credentials, sent with the
