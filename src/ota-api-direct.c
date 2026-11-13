@@ -256,7 +256,7 @@ static esp_err_t transfer(const ota_api_config_t *config, direct_ctx_t *ctx)
   if (hashing)
   {
     psa_status_t st = psa_hash_verify(&ctx->hash, config->sha256, OTA_API_SHA256_LEN);
-    ctx->hash_open = st != PSA_SUCCESS; // verify finishes the operation only on success
+    ctx->hash_open = st != PSA_SUCCESS;  // verify finishes the operation only on success
     if (st == PSA_ERROR_INVALID_SIGNATURE)
     {
       ESP_LOGE(TAG, "The downloaded image does not match the expected SHA-256");
@@ -271,7 +271,7 @@ static esp_err_t transfer(const ota_api_config_t *config, direct_ctx_t *ctx)
   }
 
   err = esp_ota_end(ctx->ota);
-  ctx->ota_open = false; // esp_ota_end frees the handle whatever it returns
+  ctx->ota_open = false;  // esp_ota_end frees the handle whatever it returns
   if (err != ESP_OK)
   {
     ESP_LOGE(TAG, "The downloaded image did not pass validation (%s)", esp_err_to_name(err));

@@ -107,58 +107,58 @@ typedef esp_err_t (*ota_api_pre_activate_cb_t)(void *user_ctx);
  */
 typedef struct
 {
-  const char *url;               /**< Firmware image URL (required) */
-  const char *cert_pem;          /**< Server certificate, PEM. NULL = trusted
-                                      root bundle (needs
-                                      MBEDTLS_CERTIFICATE_BUNDLE), or no server
-                                      verification when
-                                      CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY is
-                                      set. Ignored for an http:// URL */
-  bool skip_common_name_check;   /**< Skip server certificate CN validation */
-  esp_netif_t *bind_netif;       /**< Bind the connection to this interface.
-                                      NULL = any */
-  uint32_t task_stack_size;      /**< ota_api_start_task only. 0 =
-                                      CONFIG_OTA_API_TASK_STACK_SIZE */
-  UBaseType_t task_priority;     /**< ota_api_start_task only. 0 =
-                                      CONFIG_OTA_API_TASK_PRIORITY */
-  ota_api_event_cb_t event_cb;   /**< Per-event callback, and the only way to
-                                      stop an update from inside it.
-                                      NULL = report nothing */
-  void *user_ctx;                /**< Passed unchanged to event_cb */
-  uint32_t progress_interval_ms; /**< Minimum gap between progress reports.
-                                      0 = every chunk */
-  bool partial_download;         /**< Fetch the image over several ranged
-                                      requests, surviving links that drop long
-                                      transfers. Needs
-                                      CONFIG_ESP_HTTPS_OTA_ENABLE_PARTIAL_DOWNLOAD */
-  size_t max_http_request_size;  /**< Bytes per request when partial_download is
-                                      set. 0 = esp_https_ota chooses */
-  const uint8_t *sha256;         /**< OTA_API_SHA256_LEN bytes the downloaded
-                                      file must hash to, checked before it is
-                                      made bootable. NULL = no check */
-  const char *http_username;     /**< HTTP Basic user, sent with the first
-                                      request (no 401 round trip). NULL = no
-                                      authentication. Needs
-                                      CONFIG_ESP_HTTP_CLIENT_ENABLE_BASIC_AUTH */
-  const char *http_password;     /**< HTTP Basic password; used only with
-                                      http_username */
+  const char *url;                            /**< Firmware image URL (required) */
+  const char *cert_pem;                       /**< Server certificate, PEM. NULL = trusted
+                                                   root bundle (needs
+                                                   MBEDTLS_CERTIFICATE_BUNDLE), or no server
+                                                   verification when
+                                                   CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY is
+                                                   set. Ignored for an http:// URL */
+  bool skip_common_name_check;                /**< Skip server certificate CN validation */
+  esp_netif_t *bind_netif;                    /**< Bind the connection to this interface.
+                                                   NULL = any */
+  uint32_t task_stack_size;                   /**< ota_api_start_task only. 0 =
+                                                   CONFIG_OTA_API_TASK_STACK_SIZE */
+  UBaseType_t task_priority;                  /**< ota_api_start_task only. 0 =
+                                                   CONFIG_OTA_API_TASK_PRIORITY */
+  ota_api_event_cb_t event_cb;                /**< Per-event callback, and the only way to
+                                                   stop an update from inside it.
+                                                   NULL = report nothing */
+  void *user_ctx;                             /**< Passed unchanged to event_cb */
+  uint32_t progress_interval_ms;              /**< Minimum gap between progress reports.
+                                                   0 = every chunk */
+  bool partial_download;                      /**< Fetch the image over several ranged
+                                                   requests, surviving links that drop long
+                                                   transfers. Needs
+                                                   CONFIG_ESP_HTTPS_OTA_ENABLE_PARTIAL_DOWNLOAD */
+  size_t max_http_request_size;               /**< Bytes per request when partial_download is
+                                                   set. 0 = esp_https_ota chooses */
+  const uint8_t *sha256;                      /**< OTA_API_SHA256_LEN bytes the downloaded
+                                                   file must hash to, checked before it is
+                                                   made bootable. NULL = no check */
+  const char *http_username;                  /**< HTTP Basic user, sent with the first
+                                                   request (no 401 round trip). NULL = no
+                                                   authentication. Needs
+                                                   CONFIG_ESP_HTTP_CLIENT_ENABLE_BASIC_AUTH */
+  const char *http_password;                  /**< HTTP Basic password; used only with
+                                                   http_username */
   esp_err_t (*crt_bundle_attach)(void *conf); /**< Trust-store hook used when
                                       cert_pem is NULL, typically
                                       esp_crt_bundle_attach. NULL = the
                                       default described at cert_pem */
-  bool disable_auto_redirect;    /**< Treat any 3xx as a failure and never
-                                      contact the Location target. The image
-                                      then travels in exactly one GET (no
-                                      partial_download, no retry) */
-  uint32_t timeout_ms;           /**< Connect and per-read timeout. 0 =
-                                      esp_http_client default */
-  uint32_t connect_timeout_ms;   /**< Connect timeout (TCP and TLS handshake)
-                                      of the single-GET download
-                                      (disable_auto_redirect) when it has to
-                                      differ from timeout_ms, which the reads
-                                      then use. 0 = timeout_ms for both */
-  ota_api_pre_activate_cb_t pre_activate_cb; /**< Called right before the
-                                      image is made bootable. NULL = none */
+  bool disable_auto_redirect;                 /**< Treat any 3xx as a failure and never
+                                                   contact the Location target. The image
+                                                   then travels in exactly one GET (no
+                                                   partial_download, no retry) */
+  uint32_t timeout_ms;                        /**< Connect and per-read timeout. 0 =
+                                                   esp_http_client default */
+  uint32_t connect_timeout_ms;                /**< Connect timeout (TCP and TLS handshake)
+                                                   of the single-GET download
+                                                   (disable_auto_redirect) when it has to
+                                                   differ from timeout_ms, which the reads
+                                                   then use. 0 = timeout_ms for both */
+  ota_api_pre_activate_cb_t pre_activate_cb;  /**< Called right before the
+                                       image is made bootable. NULL = none */
 } ota_api_config_t;
 
 /**

@@ -81,8 +81,8 @@ static esp_err_t download_image(esp_https_ota_handle_t handle, const ota_api_con
       return ESP_ERR_NOT_FINISHED;
     }
 
-    err = ota_api_report_progress(config, esp_https_ota_get_image_len_read(handle), total_bytes, &last_report_us,
-                                  false);
+    err =
+      ota_api_report_progress(config, esp_https_ota_get_image_len_read(handle), total_bytes, &last_report_us, false);
     if (err != ESP_OK)
       return err;
   }
