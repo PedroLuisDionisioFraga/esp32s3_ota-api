@@ -148,6 +148,35 @@ The transfer is still encrypted, but the server is not authenticated: anyone who
 
 With `CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=n` the lab HTTPS case still works, but `esp_http_client` logs one misleading `use_crt_bundle configured but not enabled in menuconfig` error as it drops the hook; esp-tls then reaches the same unverified handshake on its own.
 
+### Authenticated download in a single request
+
+Some update servers ask for HTTP Basic on the download, forbid redirects and expect one attempt per cycle. These fields cover that:
+
+```c
+#include "esp_crt_bundle.h"
+
+ota_config.http_username = "device";             // sent with the first request, a 401 is final
+ota_config.http_password = "secret";
+ota_config.cert_pem = my_ca_pem;                 // or: ota_config.crt_bundle_attach = esp_crt_bundle_attach;
+ota_config.disable_auto_redirect = true;         // a 3xx fails, its Location is never contacted
+ota_config.connect_timeout_ms = 15000;           // TCP and TLS handshake
+ota_config.timeout_ms = 30000;                   // each read
+ota_config.pre_activate_cb = save_pending_state; // last word before the image is made bootable
+```
+
+Basic auth needs `CONFIG_ESP_HTTP_CLIENT_ENABLE_BASIC_AUTH=y`. An explicit `crt_bundle_attach` wins over `CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY`, so the server is still verified on a lab build.
+
+With `disable_auto_redirect` the component stops using `esp_https_ota`, which follows redirects on its own, and drives `esp_http_client` and `esp_ota_*` itself: one GET, no `partial_download`, no retry. The image size is checked against the partition before anything is erased, and the error tells a failed transfer from a bad image:
+
+| Result | Meaning |
+| --- | --- |
+| `ESP_FAIL` | status other than 200 (any 3xx included), or a read that failed |
+| `ESP_ERR_INVALID_RESPONSE` | the body ended before its `Content-Length`, or went past it |
+| `ESP_ERR_INVALID_SIZE` | the image is larger than the partition |
+| `ESP_ERR_OTA_VALIDATE_FAILED` | the image is not an application, fails validation, or `event_cb` refused it |
+
+`pre_activate_cb` runs on the update task once the image is complete and right before it becomes bootable: the place to persist "update pending" for the next boot. Return anything but `ESP_OK` and the image is discarded.
+
 ### Trial run and rollback
 
 With `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y` the bootloader starts a freshly written image *on trial* and goes back to the previous firmware on the next reset unless the application says the build is good. That is the safety net that keeps a device in the field from being stranded on an update that cannot even reach the network.
