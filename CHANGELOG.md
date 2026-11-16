@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Single-GET download (`disable_auto_redirect`): a server that stops sending is given up on after
+  `timeout_ms`, not after almost twice that. `esp_http_client_read()` answers a read timeout with
+  the bytes it already holds instead of an error, so the stall used to show up as one short read
+  followed by a second full wait. A read that took `timeout_ms` now fails the download with
+  `ESP_FAIL`.
+
 ## [0.3.8] - 2026-11-13
 
 ### Added

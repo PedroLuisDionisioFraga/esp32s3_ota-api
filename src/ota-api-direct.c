@@ -27,6 +27,7 @@
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
+#include "esp_timer.h"
 #include "ota-api-private.h"
 #include "psa/crypto.h"
 #include "sdkconfig.h"
@@ -47,18 +48,31 @@ typedef struct
   uint8_t *buf;
 } direct_ctx_t;
 
+/**
+ * esp_http_client_read() answers a read timeout with the bytes it already has instead of an error, so a server that
+ * stops sending shows up as one short read and then a second wait, and the transfer survives almost twice the
+ * timeout. A read that took the whole timeout means no data arrived for that long.
+ */
+static bool read_stalled(uint32_t timeout_ms, int64_t started_us)
+{
+  return timeout_ms != 0 && (esp_timer_get_time() - started_us) / 1000 >= (int64_t)timeout_ms;
+}
+
 /** Read until @p len bytes or the end of the body; returns the count or a negative error. */
-static int read_full(esp_http_client_handle_t client, uint8_t *dst, int len)
+static int read_full(esp_http_client_handle_t client, uint8_t *dst, int len, uint32_t timeout_ms)
 {
   int got = 0;
   while (got < len)
   {
+    const int64_t started_us = esp_timer_get_time();
     int n = esp_http_client_read(client, (char *)dst + got, len - got);
     if (n < 0)
       return n;
     if (n == 0)
       break;
     got += n;
+    if (got < len && read_stalled(timeout_ms, started_us))
+      return -1;
   }
   return got;
 }
@@ -164,7 +178,7 @@ static esp_err_t transfer(const ota_api_config_t *config, direct_ctx_t *ctx)
   if (!ctx->buf)
     return ESP_ERR_NO_MEM;
 
-  int got = read_full(ctx->client, ctx->buf, IMAGE_PREFIX_LEN);
+  int got = read_full(ctx->client, ctx->buf, IMAGE_PREFIX_LEN, config->timeout_ms);
   if (got < 0)
   {
     ESP_LOGE(TAG, "Download failed while reading the image header");
@@ -213,6 +227,7 @@ static esp_err_t transfer(const ota_api_config_t *config, direct_ctx_t *ctx)
       return ESP_ERR_NOT_FINISHED;
     }
 
+    const int64_t read_started_us = esp_timer_get_time();
     int n = esp_http_client_read(ctx->client, (char *)ctx->buf, DIRECT_CHUNK);
     if (n < 0)
     {
@@ -221,6 +236,11 @@ static esp_err_t transfer(const ota_api_config_t *config, direct_ctx_t *ctx)
     }
     if (n == 0)
       break;
+    if (read_stalled(config->timeout_ms, read_started_us))
+    {
+      ESP_LOGE(TAG, "No data for %u ms after %d bytes", (unsigned)config->timeout_ms, received);
+      return ESP_FAIL;
+    }
     if (total > 0 && received + n > total)
     {
       // A broken transfer, not a bad image: the caller may simply try again
