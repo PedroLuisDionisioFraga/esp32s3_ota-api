@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.10] - 2026-11-16
+
+### Fixed
+
+- Release workflow: the GitHub release is created with `--verify-tag` instead of `--target "$tag"`.
+  `--target` takes a branch or a commit, never a tag name, so the first run of every new version
+  failed with `HTTP 422 Release.target_commitish is invalid` before the registry upload. The
+  library code is unchanged since 0.3.9.
+
 ## [0.3.9] - 2026-11-16
 
 ### Fixed
