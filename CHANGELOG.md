@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-11-16
+
 ### Fixed
 
 - Single-GET download (`disable_auto_redirect`): a server that stops sending is given up on after
