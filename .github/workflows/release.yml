@@ -89,8 +89,10 @@ jobs:
             git push origin "$tag"
           fi
 
+          # The tag exists by now, created above or by an earlier run. --target takes a branch or a
+          # commit SHA, never a tag name: with one, the API answers 422 "target_commitish is invalid".
           gh release create "$tag" \
-            --target "$tag" \
+            --verify-tag \
             --title "$tag" \
             --generate-notes
 
